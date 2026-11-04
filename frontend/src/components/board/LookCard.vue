@@ -12,11 +12,11 @@ import HelpQ from '../HelpQ.vue'
 import VoiceRecorder from '../VoiceRecorder.vue'
 import CastingCard from './CastingCard.vue'
 import { post } from '../../lib/api'
-import { S, banner } from '../../lib/store'
+import { S, banner, h3Ready } from '../../lib/store'
 import { P, flushSave, projectCall, scheduleSave } from '../../lib/project'
 import { redrawUnlike, unlikeOf } from '../../lib/shoot'
 import { vZoom } from '../../lib/zoom'
-import { GENDERS } from '../../lib/consts'
+import { GENDERS, KINDS } from '../../lib/consts'
 import type { Plan } from '../../lib/types'
 
 const { t } = useI18n()
@@ -32,7 +32,7 @@ const look = computed(() => {
   const p = props.p
   if (p.mode === 'none') return { label: t('board.look.world'), ru: p.world?.ru || '', en: p.world?.en || '' }
   const cast = p.cast || []
-  const one = (c: Record<string, any>, i: number) => `${cast.length > 1 ? `${i + 1}. ` : ''}${/\d/.test((c.ru || '').slice(0, 14)) ? '' : t('board.look.age', { n: c.age }) + ' '}${c.ru || ''}${c.outfit_ru && !(c.ru || '').includes(c.outfit_ru.slice(0, 20)) ? ' ' + c.outfit_ru : ''}`
+  const one = (c: Record<string, any>, i: number) => `${cast.length > 1 ? `${i + 1}. ` : ''}${(c.kind || 'person') !== 'person' || /\d/.test((c.ru || '').slice(0, 14)) ? '' : t('board.look.age', { n: c.age }) + ' '}${c.ru || ''}${c.outfit_ru && !(c.ru || '').includes(c.outfit_ru.slice(0, 20)) ? ' ' + c.outfit_ru : ''}`
   return { label: cast.length > 1 ? t('board.look.heroes') : cast[0]?.gender === 'female' ? t('board.look.heroine') : t('board.look.hero'),
     ru: cast.map(one).join('\n'), en: cast.map((c: Record<string, any>) => `${c.en} Wearing ${c.outfit_en}`).join('\n') }
 })
@@ -50,7 +50,9 @@ function setCast(i: number, k: string, v: string) {
   const c = props.p.cast![i]
   if (k === 'age') c.age = Math.max(21, +v || 21)
   else c[k] = v
-  if (['ru', 'outfit_ru', 'gender', 'age'].includes(k)) {
+  if (k === 'kind' && v !== 'person') { c.age = 0; if (c.gender !== 'female' && c.gender !== 'male') c.gender = 'other' }
+  if (k === 'kind' && v === 'person' && !c.age) c.age = 30
+  if (['ru', 'outfit_ru', 'gender', 'age', 'kind'].includes(k)) {
     c.ru_dirty = true
     if (castPhoto(c)) c.photo_stale = true   // the portrait shows the look before the edit (CastingCard)
   }
@@ -72,7 +74,7 @@ async function describe(i: number) {
   try { S.jobs = [...S.jobs, await post(`/api/projects/${proj.value.id}/cast/${i}/describe`)] } catch (e) { banner((e as Error).message) }
 }
 function addHero() {
-  props.p.cast!.push({ gender: 'female', age: 30, ru: '', outfit_ru: '', en: '', outfit_en: '', ru_dirty: true })
+  props.p.cast!.push({ kind: 'person', gender: 'female', age: 30, ru: '', outfit_ru: '', en: '', outfit_en: '', ru_dirty: true })
   save()
   banner(t('board.look.added', { n: props.p.cast!.length }), 'info')
 }
@@ -143,7 +145,7 @@ const setVoice = (i: number, k: 'from' | 'secs', v: string) => projectCall('PUT'
       <div class="facts"><span><span>{{ t('board.look.style') }} · </span>{{ p.style_en }}</span><span><span>{{ t('board.look.sound') }} · </span>{{ p.audio_en }}</span></div>
       <template v-if="photo">
         <label class="check-row" :title="t('board.look.refTitle')">
-          <input type="checkbox" :checked="!!p.ref_photo" @change="refPhoto">{{ t('board.look.ref') }} <HelpQ id="look" term="Держать лицо по фото" /></label>
+          <input type="checkbox" :checked="!!p.ref_photo" :disabled="!h3Ready()" @change="refPhoto">{{ t('board.look.ref') }}<small v-if="!h3Ready()" class="muted"> · {{ t('board.look.needH3') }}</small> <HelpQ id="look" term="Держать лицо по фото" /></label>
         <label v-if="p.ref_photo" class="check-row sub-check" :title="t('board.look.refAllTitle')">
           <input type="checkbox" :checked="!!p.ref_all" @change="refAll">{{ t('board.look.refAll') }} <HelpQ id="look" term="На всех сценах" /></label>
         <div v-if="frameScenes" class="acts"><button type="button" class="btn" :disabled="framing" :title="t('board.look.framesTitle')" @click="framesAll"><Icon name="spark" />{{ t('board.look.frames') }}</button>
@@ -173,9 +175,10 @@ const setVoice = (i: number, k: 'from' | 'secs', v: string) => projectCall('PUT'
       <div v-else class="look-form">
         <fieldset v-for="(c, i) in p.cast" :key="i" class="look-person">
           <legend>{{ several ? t('board.look.heroN', { n: i + 1 }) : t('board.look.hero') }}{{ c.from_photo ? ' · ' + t('board.look.fromPhoto') : '' }}</legend>
-          <div class="row3">
-            <label><span class="lbl">{{ t('board.look.gender') }}</span><select class="field-in" :value="c.gender" @change="setCast(i, 'gender', val($event))"><option v-for="[k, v] in GENDERS" :key="k" :value="k">{{ v }}</option></select></label>
-            <label><span class="lbl">{{ t('board.look.ageLbl') }}</span><input class="field-in" type="number" min="21" max="99" :value="c.age || 30" @change="setCast(i, 'age', val($event))"></label>
+          <div class="row3 row-kind">
+            <label><span class="lbl">{{ t('board.cast.kind') }}</span><select class="field-in" :value="c.kind || 'person'" @change="setCast(i, 'kind', val($event))"><option v-for="[k, v] in KINDS" :key="k" :value="k">{{ v }}</option></select></label>
+            <label v-if="(c.kind || 'person') === 'person' || (c.gender && c.gender !== 'other')"><span class="lbl">{{ t('board.look.gender') }}</span><select class="field-in" :value="c.gender" @change="setCast(i, 'gender', val($event))"><option v-for="[k, v] in GENDERS" :key="k" :value="k">{{ v }}</option></select></label>
+            <label v-if="(c.kind || 'person') === 'person'"><span class="lbl">{{ t('board.look.ageLbl') }}</span><input class="field-in" type="number" min="21" max="99" :value="c.age || 30" @change="setCast(i, 'age', val($event))"></label>
             <button v-if="several && p.cast!.length > 1" type="button" class="btn danger" :title="t('board.look.removeHeroTitle')" @click="delHero(i)"><Icon name="trash" />{{ t('board.look.remove') }}</button><span v-else />
           </div>
           <div class="person-photo"><img v-if="castPhoto(c)" v-zoom :src="castPhoto(c)!" :alt="t('board.look.photoAltN', { n: i + 1 })"><span v-else class="muted">{{ t('board.look.noPhoto') }}</span>
@@ -213,7 +216,7 @@ const setVoice = (i: number, k: 'from' | 'secs', v: string) => projectCall('PUT'
       <div class="facts"><span><span>{{ t('board.look.style') }} · </span>{{ p.style_en }}</span><span><span>{{ t('board.look.sound') }} · </span>{{ p.audio_en }}</span></div>
       <template v-if="photo && p.mode !== 'none'">
         <label class="check-row" style="margin-top:10px" :title="t('board.look.refTitle')">
-          <input type="checkbox" :checked="!!p.ref_photo" @change="refPhoto">{{ t('board.look.ref') }} <HelpQ id="look" term="Держать лицо по фото" /></label>
+          <input type="checkbox" :checked="!!p.ref_photo" :disabled="!h3Ready()" @change="refPhoto">{{ t('board.look.ref') }}<small v-if="!h3Ready()" class="muted"> · {{ t('board.look.needH3') }}</small> <HelpQ id="look" term="Держать лицо по фото" /></label>
         <label v-if="p.ref_photo" class="check-row sub-check" :title="t('board.look.refAllTitle')">
           <input type="checkbox" :checked="!!p.ref_all" @change="refAll">{{ t('board.look.refAll') }} <HelpQ id="look" term="На всех сценах" /></label>
         <div v-if="frameScenes" class="acts" style="margin-top:8px"><button type="button" class="btn" :disabled="framing" :title="t('board.look.framesTitle')" @click="framesAll"><Icon name="spark" />{{ t('board.look.frames') }}</button>

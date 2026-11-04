@@ -26,14 +26,17 @@ import SceneDetail from '../components/board/SceneDetail.vue'
 import ScenePeek from '../components/board/ScenePeek.vue'
 import ShootPanel from '../components/board/ShootPanel.vue'
 import BoardSong from '../components/board/BoardSong.vue'
+import StageBar from '../components/StageBar.vue'
+import WriterThinking from '../components/WriterThinking.vue'
 import { S, banner, onJobEnd, stageKind } from '../lib/store'
 import { api, post } from '../lib/api'
-import { P, flushSave, liveWriter, openProject, projectCall, reloadProject, rewrite, scheduleSave, unsaved } from '../lib/project'
+import { P, flushSave, liveAuto, liveWriter, openProject, projectCall, reloadProject, rewrite, scheduleSave, unsaved } from '../lib/project'
 import { TL, needsTranslation } from '../lib/textLang'
 import { modeName } from '../lib/consts'
 import { dec, mins, mmss } from '../lib/format'
-import { moodName } from '../lib/moods'
 import { lenOf, peek, shotPng } from '../lib/board'
+import LookPick from '../components/LookPick.vue'
+import type { LookChoice } from '../lib/looks'
 
 const { t } = useI18n()
 const props = defineProps<{ id: string }>()
@@ -42,6 +45,14 @@ const route = useRoute()
 const loaded = ref(false)
 const p = computed(() => P.proj?.plan || null)
 const job = computed(() => (P.proj ? liveWriter(P.proj.id) : undefined))
+// the writer's thinking (WriterThinking.vue): the live writer's, else the last finished one's as «Подумал 41 с ▸»
+const thinkJob = computed(() => job.value || (P.proj ? S.jobs.filter((j) => (j.kind === 'write' || j.kind === 'rewrite') && j.params?.project === P.proj!.id
+  && j.status === 'done' && j.progress?.thinking?.text).sort((a, b) => (b.finished || 0) - (a.finished || 0))[0] : undefined))
+// «Песня → клип» (app/autopilot.py): its job, and its word on the project when it failed or was stopped
+const auto = computed(() => (P.proj ? liveAuto(P.proj.id) : undefined))
+const autoState = computed(() => ((P.proj as any)?.autopilot || null) as Record<string, any> | null)
+// a stage left by a restart (no job, not finished) reads as stopped: «Продолжить» goes on from it
+const autoShown = computed(() => !!auto.value || !!(autoState.value && !autoState.value.finished && (autoState.value.error || autoState.value.stopped || autoState.value.stage)))
 const scene = computed(() => p.value && p.value.scenes[Math.min(P.sel, p.value.scenes.length - 1)])
 const unlocked = computed(() => (p.value ? p.value.scenes.filter((s) => !s.locked).length : 0))
 // the slate: the facts of the video, each in its cell with its name (a bare «Несколько» said nothing)
@@ -51,9 +62,24 @@ const facts = computed(() => {
   const vm = (S.cfg?.video_models || []).find((m) => m.id === (st.video_model || 'h3'))
   return [[t('board.fact.model'), vm?.name || 'MiniMax H3'], ...(pl.clip ? [[t('board.fact.clip'), `${pl.clip.name || t('board.fact.song')}`]] : []), [t('board.fact.scenes'), String(pl.scenes.length)],
     [t('board.fact.length'), mmss(pl.seconds)], [t('board.fact.frame'), st.aspect || ''],
-    [t('board.fact.mood'), pl.manual ? '' : moodName(st.mood || '')], [t('board.fact.people'), pl.manual ? '' : PEOPLE.includes(pl.mode) ? t(`board.people.${pl.mode}`) : modeName(pl.mode)],
+    [t('board.fact.people'), pl.manual ? '' : PEOPLE.includes(pl.mode) ? t(`board.people.${pl.mode}`) : modeName(pl.mode)],
     [t('board.fact.prompts'), pl.manual ? t('board.fact.ownPrompts') : ''], [t('board.fact.script'), w?.model ? t('board.fact.in', { t: mins(w.seconds) }) : '']].filter(([, v]) => v)
 })
+// «Подача · Вид ✎» in the header (GET /api/projects adds `looks`: the choice, the writer's pick, an older mood mapped);
+// a change is saved at once and the server rebuilds the style (the scenes' texts stay)
+const looksState = computed(() => ((P.proj as any)?.looks || null) as Record<string, any> | null)
+const lookChoice = computed<LookChoice>(() => ({ delivery: looksState.value?.delivery || 'auto', look: looksState.value?.look || 'auto', look_own: looksState.value?.look_own || '' }))
+const changingLook = ref(false)
+async function changeLook(v: LookChoice) {
+  changingLook.value = true
+  try {
+    // only what changed: a delivery alone must not send a stale look along
+    const was = lookChoice.value, diff: Record<string, string> = {}
+    for (const k of ['delivery', 'look', 'look_own'] as const) if ((v[k] || '') !== (was[k] || '')) diff[k] = v[k] || ''
+    if (!Object.keys(diff).length) return
+    if (await projectCall('PUT', '', { settings: diff }) && ('look' in diff || 'look_own' in diff) && (p.value?.style_en || p.value?.cast?.length)) banner(t('looks.rebuilt'), 'info')
+  } finally { changingLook.value = false }
+}
 const locked = computed(() => (p.value ? p.value.scenes.length - unlocked.value : 0))
 // scenes still in English (clips brought from Remiqora): the writer puts them in Russian, for reading only
 // scenes in another language than the texts' (app/i18n.py): «Перевести на …» has work
@@ -69,9 +95,10 @@ const busyText = computed(() => {
   if (!j) return ''
   if (j.params?.how === 'ru') return t('board.busy.ru', { step: j.step || 0, steps: j.steps || english.value, lang: TL.name })
   const k = stageKind(j)   // a clip's job goes on after the storyboard: the places, the singer, the frames
-  if (k !== 'write' && j.kind === 'write') return `${t(`board.busy.${k}`, { done: j.progress?.done || 0, all: j.progress?.total || '…' })}… ${Math.round(j.elapsed || 0)} ${t('common.s')}`
+  // the seconds, the bar and «ещё ~N с» are the card's own (WriterThinking.vue with `title`)
+  if (k !== 'write' && j.kind === 'write') return `${t(`board.busy.${k}`, { done: j.progress?.done || 0, all: j.progress?.total || '…' })}…`
   return `${j.kind === 'write' ? t('board.busy.write') : j.params?.how === 'looks' ? t('board.busy.looks')
-    : j.params?.how === 'describe' ? t('board.busy.describe') : t('board.busy.rewrite')}… ${Math.round(j.elapsed || 0)} ${t('common.s')}`
+    : j.params?.how === 'describe' ? t('board.busy.describe') : t('board.busy.rewrite')}…`
 })
 
 // no storyboard and no writer at work: the writer failed - its error, and «Расписать ещё раз» with the same idea and
@@ -85,10 +112,6 @@ async function writeAgain() {
   try { const r = await post(`/api/projects/${P.proj!.id}/write`, { model: S.llm }); S.jobs = [...S.jobs, r.job] }
   catch (e) { banner((e as Error).message) } finally { retrying.value = false }
 }
-
-// the writer's share as a bar: its elapsed time against its estimate (the job knows this machine's speed)
-const busyPct = computed(() => (job.value?.estimate ? Math.min(99, Math.round((100 * (job.value.elapsed || 0)) / job.value.estimate)) : null))
-const busyLeft = computed(() => (job.value?.estimate ? t('board.busy.left', { t: mins(Math.max(0, job.value.estimate - (job.value.elapsed || 0))) }) : ''))
 
 const setName = (e: Event) => { P.proj!.name = (e.target as HTMLInputElement).value; scheduleSave('name') }
 // «Ветка»: a copy with its shots that remembers this one (app/projects.py branch); a branch says what differs
@@ -168,6 +191,10 @@ function onKey(e: KeyboardEvent) {
 // (edits not saved yet stay on top of what comes - lib/project.ts adopt)
 watch(() => (job.value?.kind === 'write' ? `${job.value.progress?.stage}:${job.value.progress?.done}` : ''),
   (v, was) => { if (v && was && v !== was) reloadProject() })
+// «Песня → клип» likewise, through its stages (the script, the portrait, the places, the frames; the render's scenes
+// are the video screen's)
+watch(() => { const pr = (auto.value as any)?.progress; return pr ? `${pr.auto?.stage}:${pr.auto?.stage === 'render' ? '' : `${pr.stage}:${pr.done}`}` : '' },
+  (v, was) => { if (v !== was && was) reloadProject() })
 
 // a job of this project ended: show what it did - a shoot too, it writes the scenes' seeds, takes and camera
 let off: () => void
@@ -188,7 +215,9 @@ onBeforeRouteLeave(() => flushSave())
   <!-- the project being read: a spinner, not a blank black screen -->
   <div v-if="!loaded" class="screen"><main class="main"><div class="empty-state" role="status"><span class="busy-note"><i class="spin" />{{ t('board.loading') }}</span></div></main></div>
   <div v-else-if="loaded && P.proj && !p" class="screen"><main class="main"><div class="empty-state">
-    <template v-if="job"><div class="busy-note"><i class="spin" />{{ busyText }}<template v-if="busyPct != null"><span class="bar busy-bar" role="progressbar" :aria-valuenow="busyPct" aria-valuemin="0" aria-valuemax="100"><i :style="{ width: `${busyPct}%` }" /></span><small>{{ busyLeft }}</small></template></div>
+    <template v-if="autoShown"><StageBar class="bv-auto" :pid="P.proj.id" :state="autoState" /><span v-if="auto">{{ t('board.canClose') }}</span></template>
+    <template v-else-if="job"><!-- one card: what the writer does, its progress, its steps and its thinking -->
+      <WriterThinking class="bv-think" :job="job" :title="busyText" />
       <span>{{ t('board.canClose') }}</span></template>
     <template v-else><span>{{ t('board.noBoard') }}</span>
       <div v-if="failed?.error" class="warn-line board-err"><Icon name="warn" :size="14" /><span>{{ failed.error }}</span></div>
@@ -200,7 +229,12 @@ onBeforeRouteLeave(() => flushSave())
 
   <div v-else-if="loaded && p && scene" class="bv">
     <BoardBar :p="p" />
-    <div v-if="job" class="busy-note bv-note"><i class="spin" />{{ busyText }}<template v-if="busyPct != null"><span class="bar busy-bar" role="progressbar" :aria-valuenow="busyPct" aria-valuemin="0" aria-valuemax="100"><i :style="{ width: `${busyPct}%` }" /></span><small>{{ busyLeft }}</small></template></div>
+    <!-- «Подача · Вид»: under the bar in every view, not only with the video's facts -->
+    <div v-if="!p.manual" class="bv-looks">
+      <LookPick class="bh-looks" variant="chips" :video="P.proj?.settings.video_model || 'h3'" :model-value="lookChoice" :pick="looksState?.look_pick" :disabled="!!job || changingLook"
+        @update:model-value="changeLook" /></div>
+    <StageBar v-if="autoShown" class="bv-note bv-auto" :pid="P.proj!.id" :state="autoState" />
+    <WriterThinking v-if="thinkJob" class="bv-note" :job="thinkJob" :title="job ? busyText : undefined" />
     <div class="screen bv-body">
       <SidePanel id="board" class="side right" :label="t('board.sidePanel')" :width="380">
         <GroupPanel v-if="P.picked.length > 1" :p="p" />

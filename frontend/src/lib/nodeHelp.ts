@@ -6,7 +6,7 @@ import { videoModel } from './store'
 import { t as tx } from '../i18n'
 
 export interface NodeHelp { what: string; ports: string }   // the icon: graphDoc.ICON; {m} - the graph's model
-const HELP_TYPES = ['idea', 'hero', 'writer', 'prompt', 'photo', 'picture', 'scene', 'v2v', 'facefix', 'frame', 'sound', 'lora', 'join', 'montage', 'track',
+const HELP_TYPES = ['idea', 'hero', 'writer', 'song', 'clip_writer', 'prompt', 'photo', 'picture', 'scene', 'v2v', 'facefix', 'frame', 'sound', 'lora', 'join', 'montage', 'track',
   'music', 'output', 'note', 'group']
 const NO_PORTS = ['note', 'group']
 // read through t() when read: the texts follow the interface's language (locales/nodes.ts what / ports)
@@ -116,7 +116,19 @@ export function nextStep(id: string): Next | null {
       if (!(d.items || []).length) return need(tx('nodes.next.loraAdd'))
       if (!outs(id).length) return need(tx('nodes.next.loraLink'))
       return null
+    case 'song':
+      if (!d.file) return need(tx('nodes.next.songFile'))
+      if (!outs(id).some((e) => e.sourceHandle === 'song')) return need(tx('nodes.next.songLink'))
+      if (d.recognised === false) return tip(tx('nodes.next.songWords'))
+      return tip(tx('nodes.next.songOk'))
+    case 'clip_writer':
+      if (!has(id, 'song')) return need(tx('nodes.next.clipSong'))
+      if (!d.plan) return need(tx('nodes.next.clipWrite'))
+      if (st?.state === 'stale') return need(tx('nodes.next.writerStale'))
+      if (!GE.nodes.some((x) => (x.data as any).from === id)) return need(tx('nodes.next.clipExpand'))
+      return tip(tx('nodes.next.writerOk'))
     case 'join': case 'montage':
+      if (t === 'montage' && d.beats && !has(id, 'track')) return need(tx('nodes.next.montageBeats'))
       if (!has(id, 'clips')) return need(tx('nodes.next.joinClips'))
       if (!outs(id).length) return need(tx('nodes.next.joinLink'))
       return t === 'montage' ? tip(tx('nodes.next.montageOpen')) : tip(tx('nodes.next.joinMontage'))

@@ -10,8 +10,8 @@ import PresetMenu from '../components/lab/PresetMenu.vue'
 import PromptSheet from '../components/lab/PromptSheet.vue'
 import SceneForm from '../components/lab/SceneForm.vue'
 import { api, post } from '../lib/api'
-import { S, banner, loadLoras, lorasFor, modelName, onJobEnd, pollJobs } from '../lib/store'
-import { minsTenth as mins, secs } from '../lib/format'
+import { S, banner, loadLoras, lorasFor, modelName, onJobEnd, pickVideo, pollJobs } from '../lib/store'
+import { minsTenth as mins, secs, when as whenTs } from '../lib/format'
 import { PARTS, PART_COLOR, type Lang, labelSide, markup, paragraphs } from '../lib/promptParts'
 import { FRAME_LINE, type Fix, checkPrompt, fitTimeline } from '../lib/promptChecks'
 import type { Preset } from '../lib/presets'
@@ -32,7 +32,7 @@ const F = reactive({
   prompt: (saved.prompt || '') as string, seed: (saved.seed || '') as string, count: +(saved.count || 1),
   used: (saved.used || {}) as Record<string, { strength: number }>, last: (saved.last || {}) as Record<string, number>,
   aspect: (saved.aspect || '16:9') as string, quality: (saved.quality || 'draft') as string, seconds: +(saved.seconds || 5),
-  model: (saved.model || 'h3') as string,     // phase 10: which model shoots the scene
+  model: (saved.model || '') as string,     // phase 10: which model shoots the scene
   markup: (saved.markup ?? true) as boolean,
   lang: (saved.lang || 'en') as Lang,          // the tab: the English prompt (to H3) or the Russian one (to translate)
   ru: (saved.ru || '') as string,
@@ -89,6 +89,7 @@ const going = ref(false)
 // ---- the fields: in the «Поля» mode the texts are composed from them (the model shoots the English one, in its own
 // form: H3's parts, LTX's / WAN's one paragraph); «Текст» edits the texts themselves, and going back to the fields
 // parses them ----
+watch(() => S.cfg, () => { F.model = pickVideo(F.model) }, { immediate: true })   // H3 is optional: the first installed model, not a fixed one
 const form = computed(() => formOf(F.model))
 const wholeTag = computed(() => (form.value === 'h3' ? undefined : t('lab.tag.whole', { model: mShort.value })))
 const enComposed = () => composeFor(F.fieldsEn, form.value, F.seconds, !!F.frame)
@@ -415,7 +416,8 @@ const vfRatio = computed(() => (shown.value?.params.width && shown.value.params.
 const autoplay = ref(false)
 async function loadVideos() { try { videos.value = await api<Take[]>('/api/videos') } catch { /* the server is restarting */ } }
 function show(v: Take | null, play = false) { shown.value = v; promptOpen.value = false; autoplay.value = play }
-const when = (v: Take) => (v.created || '').replace('T', ' ').slice(0, 16)
+// the same «сегодня, 09:31» as everywhere else (a take's `created` is local time without a zone)
+const when = (v: Take) => { const ms = Date.parse(v.created || ''); return Number.isNaN(ms) ? '' : whenTs(ms / 1000) }
 const out = (path: string) => `/outputs/${encodeURIComponent(path)}`
 const loraLine = (p: Record<string, any>) => (p.loras || []).map((l: any) => `${l.name} ${fmt(l.strength)}`).join(', ')
 async function continueFrom(v: Take) {

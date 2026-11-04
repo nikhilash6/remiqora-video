@@ -1,0 +1,104 @@
+/* The design review before 0.3.0: a phone's header and the board's bar, tap areas, long names. Loaded last, so it wins
+   over the page styles it adjusts; each block says what it is for. */
+
+/* ---- the board's progress and its main button: beside each other on a desktop, a bar fixed at the foot of a phone ---- */
+.bb-cta { display: contents; }
+.bb-go { white-space: nowrap; }
+@media (max-width: 760px) {
+  .bb { flex-wrap: wrap; }
+  .bb .grow { display: none; }
+  .bb-cta { display: flex; align-items: center; gap: 12px; position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--rule); background: var(--panel); box-shadow: 0 -8px 24px rgba(0, 0, 0, .35); }
+  .bb-cta .bb-prog { display: flex; flex: 0 1 38%; min-width: 0; gap: 5px; }
+  .bb-cta .bb-prog div { flex-direction: column; align-items: flex-start; gap: 1px; }
+  .bb-cta .bb-prog small { display: none; }
+  .bb-cta .bb-prog b { font-size: 13px; white-space: nowrap; }
+  .bb-cta .bb-go { flex: 1 1 auto; min-width: 0; min-height: 46px; justify-content: center; }
+  .bv { padding-bottom: 76px; }
+  .bv-tools { flex-wrap: wrap; row-gap: 8px; }
+  .bv-tools > span:first-child { flex: 1 1 100%; white-space: nowrap; }
+  .bv-tools .grow, .bv-show { display: none; }
+  .bv-tools .seg.bb-view { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .seg.bb-view > * { white-space: nowrap; flex: none; }
+  /* the header's rail: the video's name, then its stages in a strip that scrolls (ProjectRail brings the current one
+     into view); a fade at the edge says there is more */
+  .dock, .graph-side.dock { --pad: 16px; }   /* the side panels' padding is 16 on a phone: their full-bleed bars (margin: -pad) stay inside the page */
+  .rail { gap: 8px; }
+  .rail-stages { position: relative; }
+  .rail-name { max-width: 128px; }
+  .rail-stages { flex: 1 1 0; overflow-x: auto; scrollbar-width: none; padding-right: 24px; gap: 6px;
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); }
+  .rail-stages > .stage { flex: none; padding: 4px 8px; }
+  .stage + .stage::before { display: none; }
+}
+
+/* ---- tap areas and names for assistive tech (AppHeader, the «?» buttons) ---- */
+/* a «?» keeps its 18 px look; its hit area is 40 px around it */
+button.q { position: relative; }
+button.q::after { content: ""; position: absolute; inset: -11px; }
+@media (max-width: 1100px) {
+  .pages .nav-ic { min-width: 40px; min-height: 40px; justify-content: center; }
+}
+@media (max-width: 760px) {
+  .top .status { gap: 4px; }
+  .pages { gap: 0; }
+  .lang-seg button { min-width: 40px; min-height: 40px; display: inline-flex; align-items: center; justify-content: center; padding: 0 6px; }
+  .top .act-btn { min-width: 40px; min-height: 40px; }
+}
+/* between a phone and a tablet the card's words stay beside its dot while they fit */
+@media (min-width: 521px) and (max-width: 640px) {
+  .top .act-text { display: inline; }
+  .top .act-btn { max-width: 150px; }
+}
+@media (max-width: 380px) { .top .brand-t { display: none; } }
+
+/* ---- the graph editor: the tool bar and «Стиль проекта» are one column, so a tool bar that wraps on a phone pushes the style bar down ---- */
+.graph-bars { position: absolute; left: 16px; top: 14px; right: 16px; z-index: 5; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; pointer-events: none; }
+.graph-bars > * { pointer-events: auto; max-width: 100%; }
+.graph-bars > .graph-tools, .graph-bars > .graph-style { position: static; }
+
+/* ---- the music lane: its name and level stay readable over the wave ---- */
+.et-mus b, .et-mus small { flex: none; max-width: 70%; padding: 1px 6px; border-radius: 4px; background: rgba(0, 0, 0, .5); color: var(--text); text-shadow: none; }
+.et-mus b { flex: 0 1 auto; min-width: 0; }
+
+/* ---- Models: the section list is one column on a phone (its group headers stay headers); H3's licence line is a visible note ---- */
+@media (max-width: 860px) {
+  .m-nav { flex-direction: column; flex-wrap: nowrap; max-height: 42vh; overflow-y: auto; }
+  .m-nav a { flex: none; }
+}
+.m-lic.region { color: var(--warn); font-size: 13px; }
+.m-lic.region a { color: var(--accent-hi); }
+
+/* ---- the board: «Подача · Вид» chips under the bar in every view ---- */
+.bv-looks { flex: none; padding: 8px 26px 0; }
+@media (max-width: 760px) { .bv-looks { padding: 8px 16px 0; } }
+
+/* ---- «Подача и вид»: tile names may take two lines, the «every frame» badge is readable, a phone's foot keeps the desktop order ---- */
+.lp-tiles { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); }
+.lp-name { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; min-height: 2.5em; }
+.lp-frame { font-size: 11.5px; padding: 1px 6px; }
+@media (max-width: 720px) {
+  .hm-foot:has(.lpk-done) { flex-wrap: wrap; }
+  .hm-foot:has(.lpk-done) .lpk-now { flex: 1 1 100%; }
+  .hm-foot:has(.lpk-done) .grow { display: none; }
+  .hm-foot:has(.lpk-done) .lpk-done { flex: 1 1 0; min-height: 44px; }
+}
+
+/* ---- the video page: the thumbnails' columns (8 on a desktop, fewer on a phone so the captions fit) ---- */
+.shots { grid-template-columns: repeat(var(--cols, 8), minmax(0, 1fr)); }
+@media (max-width: 760px) { .shots { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 8px; } }
+@media (max-width: 420px) { .shots { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+
+/* ---- the help: the contents column is as tall as the window, its counters are readable ---- */
+@media (min-width: 761px) { .help-toc { min-height: calc(100vh - 64px); } }
+.toc-head small, .help-toc small { font-size: 11.5px; }
+
+/* ---- the lab's line under the header's name: a sentence on its own row on a phone, not squeezed beside the name ---- */
+@media (max-width: 760px) {
+  .rail { flex-wrap: wrap; }
+  .rail-note { flex: 1 1 100%; min-width: 0; }
+}
+
+/* ---- the scene panel: the camera's longest option fits its select ---- */
+.side.right .row2 { grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); }
+.row2 select.field-in { padding-left: 10px; padding-right: 20px; font-size: 13.5px; text-overflow: ellipsis; }

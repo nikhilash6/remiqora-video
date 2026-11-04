@@ -1,0 +1,87 @@
+{
+ "name": "Song → clip",
+ "about": "A clip from a song, like the «Song → clip» button, but in parts: scenes on the bars, your own intro, two endings, a short and a long version, a style LoRA, one scene shot again by another model.",
+ "nodes": [
+  {
+   "id": "song",
+   "type": "song",
+   "position": {
+    "x": 0,
+    "y": 0
+   },
+   "data": {
+    "title": "Song",
+    "length": "whole"
+   }
+  },
+  {
+   "id": "idea",
+   "type": "idea",
+   "position": {
+    "x": 0,
+    "y": 260
+   },
+   "data": {
+    "title": "Idea or mood",
+    "text": ""
+   }
+  },
+  {
+   "id": "hero",
+   "type": "hero",
+   "position": {
+    "x": 0,
+    "y": 520
+   },
+   "data": {
+    "title": "Hero: a photo or a try"
+   }
+  },
+  {
+   "id": "w",
+   "type": "clip_writer",
+   "position": {
+    "x": 380,
+    "y": 200
+   },
+   "data": {
+    "title": "Clip writer"
+   }
+  },
+  {
+   "id": "note",
+   "type": "note",
+   "position": {
+    "x": 0,
+    "y": -300
+   },
+   "data": {
+    "text": "Song → clip in parts.\n\n1. Upload the song into «Song» and pick the piece: the whole song or the best minute.\n2. A line of idea or mood is optional. So is the hero's photo: without it the writer invents the hero, and «Expand» adds their portrait.\n3. «Clip writer» → «Write»: scenes on the bars, singing ones and inserts, as the «Song → clip» button makes them.\n4. «Expand into scenes»: «Prompt → Scene» chains as long as their bars, frames with the hero, a «Join on the bars» with the song and an «Output».\n\nFrom then on it is an ordinary graph: put your own intro before the scenes in the «Join», copy the «Join» and the «Output» for a second ending or a short version, connect a style LoRA, give one scene another model."
+   }
+  }
+ ],
+ "edges": [
+  {
+   "id": "song-song-w-song",
+   "source": "song",
+   "sourceHandle": "song",
+   "target": "w",
+   "targetHandle": "song"
+  },
+  {
+   "id": "idea-text-w-idea",
+   "source": "idea",
+   "sourceHandle": "text",
+   "target": "w",
+   "targetHandle": "idea"
+  },
+  {
+   "id": "hero-look-w-cast",
+   "source": "hero",
+   "sourceHandle": "look",
+   "target": "w",
+   "targetHandle": "cast"
+  }
+ ],
+ "order": 15
+}

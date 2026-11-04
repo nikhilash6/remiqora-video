@@ -6,9 +6,13 @@ import { t } from '../i18n'
 import type { Config, Job, LlmList, Lora, Sys } from './types'
 
 const KEY = 'h3studio.studio.v1'
-interface Form { idea: string; seconds: number; aspect: string; mood: string; mode: string; music: string; photo: any; photoRole: string; manual: boolean; graph: boolean; video: string
+interface Form { idea: string; seconds: number; aspect: string; mood: string; mode: string; who: string; music: string; photo: any; photoRole: string; manual: boolean; graph: boolean; video: string
+  heroText?: string; heroKind?: string   // «Герой своими словами» (the story's fine settings настройка): cast 1, fixed
+  delivery?: string; lookId?: string; lookOwn?: string   // «Подача» and «Вид» (lib/looks.ts), shared by the idea screen and the clip's starts
   clip: boolean; song: string; songFrom: number; songSecs: number; clipVideo: string   // phase 11: a clip from a song
   clipSinger?: boolean; clipFrames?: boolean; clipPlaces?: boolean   // what the clip's job draws after the script: only when ticked
+  auto?: boolean; autoPhoto?: any; autoIdea?: string; autoAspect?: string; autoLength?: 'whole' | 'best' | 'own' | 's30'; autoJob?: string; autoScript?: 'writer' | 'own'; autoHero?: boolean; autoFrames?: boolean; autoPlaces?: boolean   // «Сделать ролик» (the home's «Что снимаем?»): the photo, the song's length, the job
+  what?: string; ask?: boolean   // «Не так? Изменить» (lib/home.ts What, '' - as understood); «Спрашивать меня»
   clipLook?: 'writer' | 'own' | 'photo'; clipLookRu?: string; clipGender?: string; clipStory?: 'writer' | 'idea'; clipScenes?: 'all' | 'empty' | 'none'   // «Что пишет сценарист»
   loras?: { id: string; name: string; strength: number }[]; picLoras?: { krea?: { id: string; name: string; strength: number }[]; flux2?: { id: string; name: string; strength: number }[] } }   // the new video's LoRA (LoraSet)
 // an error stays until closed (it may be the only word of a lost edit or a failed job); news goes by itself.
@@ -31,8 +35,8 @@ export const S = reactive({
   guide: null as string | null,   // the help window open: a screen's (lib/guides.ts) or 'app' from the header
   keys: false,                    // the graph's keys sheet
   // the idea screen's form, kept between visits
-  form: { idea: '', seconds: 30, aspect: '16:9', mood: 'Кино', mode: 'one', music: '', photo: null, photoRole: 'start', manual: false, graph: false, video: 'h3',
-    clip: false, song: '', songFrom: 0, songSecs: 60, clipVideo: 'ltx23', ...(saved.form || {}) } as Form,
+  form: { idea: '', seconds: 30, aspect: '16:9', mood: 'Кино', mode: 'one', who: 'auto', music: '', photo: null, photoRole: 'start', manual: false, graph: false, video: '',
+    clip: false, song: '', songFrom: 0, songSecs: 60, clipVideo: '', ...(saved.form || {}) } as Form,
 })
 
 export const keep = () => { try { localStorage.setItem(KEY, JSON.stringify({ form: S.form, llm: S.llm })) } catch { /* private window */ } }
@@ -73,7 +77,7 @@ export async function pollJobs() {
 }
 // a job seen alive that failed, in a banner wherever the user is: the board only reloads the project, so a frame, a
 // take or a portrait that failed simply vanished. The video page and the lab say their own jobs' errors in place.
-export const jobKindName = (j: Job) => t(`status.kind.${['render', 'take', 'graph', 'scene', 'voice', 'draw', 'frame', 'place', 'lyrics'].includes(stageKind(j)) ? stageKind(j) : stageKind(j) === 'unlike' ? 'frame' : 'writer'}`)
+export const jobKindName = (j: Job) => t(`status.kind.${j.kind === 'autopilot' ? 'autopilot' : ['render', 'take', 'graph', 'scene', 'voice', 'draw', 'frame', 'place', 'lyrics'].includes(stageKind(j)) ? stageKind(j) : stageKind(j) === 'unlike' ? 'frame' : 'writer'}`)
 function jobFailed(j: Job) {
   const pid = j.params?.project as string | undefined, here = location.hash.replace(/^#/, '').split('?')[0]
   const to = !pid ? (j.kind === 'scene' ? '/lab' : undefined) : j.kind.startsWith('graph') ? `/g/${pid}` : `/p/${pid}${j.kind === 'render' ? '/video' : ''}`
@@ -87,7 +91,10 @@ export async function pollSystem() {
 export async function loadLlms() {
   try { S.llms = await api<LlmList>('/api/llm/models') } catch { return }
   const r = S.llms!
-  if (!r.models.some((m) => m.id === S.llm)) S.llm = r.default || r.models[0]?.id || null
+  // the writer is chosen on «Модели» (the server's LLM_MODEL), the same for every browser: a model this browser
+  // remembered from before (another device, the old header picker) no longer overrides it - it sent a writer
+  // without eyes with a photo while «Модели» said another (2026-11-04)
+  S.llm = r.default || (r.models.some((m) => m.id === S.llm) ? S.llm : r.models[0]?.id || null)
   if (!r.server_ok) banner(t('misc.noLlamaServer'))
 }
 export async function loadKreaLoras() {
@@ -107,6 +114,14 @@ export async function loadProjects() {
 export const projectName = (id: string) => S.projects.find((p) => p.id === id)?.name || id
 // a video model's card (app/videomodels.py), its short name and colour; a model the server no longer has: its id, grey
 export const videoModel = (id: string) => (S.cfg?.video_models || []).find((m) => m.id === id)
+// H3 is optional: a NEW choice (idea screen, graph, lab) takes the server's default, the first installed model; a saved
+// choice that is not installed (any more) is replaced by it. A STORED project keeps its own (`|| 'h3'` stays there).
+export const defaultVideo = () => S.cfg?.default_video_model || 'h3'
+export const pickVideo = (id?: string | null) => { const m = id ? videoModel(id) : undefined; return m && !m.imported && !m.missing.length ? m.id : defaultVideo() }
+// «Песня → клип»: the model picked while it is installed, else the server's choice for clips (one that shoots to the track first)
+export const pickClipVideo = (id?: string | null) => { const m = id ? videoModel(id) : undefined; return m && !m.imported && !m.missing.length ? m.id : S.cfg?.clip_video_model || 'ltx23' }
+// the features only MiniMax H3 has (faces from photos - Ref2VA, «H3 · Ref2VA» in «Видео → видео») need its files
+export const h3Ready = () => { const m = videoModel('h3'); return !!m && !m.missing.length }
 export const modelName = (id: string) => videoModel(id)?.short || id
 export const modelColor = (id: string) => videoModel(id)?.color || 'var(--rule-3)'
 // the LoRA of a video model's own folders (app/loras.py): H3's, LTX 2.3's, LTX 2.5's; an imported model's are its version's
@@ -131,5 +146,9 @@ export const live = (j: Job) => j.status === 'running' || j.status === 'queued'
 // a clip's «write» job goes on after the writer (app/clip_api.py): the song's words, the places, the singer, the
 // frames - the stage it is at, as the kind of the job that does that alone (the header and the board name it so)
 const WRITE_STAGES: Record<string, string> = { lyrics: 'lyrics', grouping: 'places', drawing: 'draw', frames: 'frame', unlike: 'unlike' }
-export const stageKind = (j: Job) => (j.kind !== 'write' ? j.kind
+// «Песня → клип» (app/autopilot.py) runs those stages and the render in one job: the stage it is at, likewise
+const AUTO_STAGES: Record<string, string> = { words: 'lyrics', write: 'write', hero: 'cast_tries', render: 'render' }
+export const stageKind = (j: Job): string => (j.kind === 'autopilot' ? (['places', 'frames'].includes(j.progress?.auto?.stage)
+  ? stageKind({ ...j, kind: 'write' }) : AUTO_STAGES[j.progress?.auto?.stage] || 'write')
+  : j.kind !== 'write' ? j.kind
   : j.progress?.stage === 'places' ? (j.progress.total ? 'place' : 'places') : WRITE_STAGES[j.progress?.stage] || 'write')

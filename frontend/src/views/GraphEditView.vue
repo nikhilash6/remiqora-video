@@ -15,15 +15,18 @@ import SidePanel from '../components/SidePanel.vue'
 import GuideButton from '../components/help/GuideButton.vue'
 import EditNode from '../components/graph/EditNode.vue'
 import GroupNode from '../components/graph/GroupNode.vue'
+import GraphEdge from '../components/graph/GraphEdge.vue'
 import NodeInspector from '../components/graph/NodeInspector.vue'
 import TemplatesModal from '../components/graph/TemplatesModal.vue'
+import LookPick from '../components/LookPick.vue'
+import type { LookChoice, LookPick as Pick } from '../lib/looks'
 import { download, portable, type Tpl } from '../lib/templates'
 import { api, post } from '../lib/api'
 import { S, banner, onJobEnd, pollJobs } from '../lib/store'
 import { fitLink, nodeWhat, whoName } from '../lib/nodeHelp'
 import { arrange } from '../lib/graphArrange'
-import { ADD_MENU, GE, ICON, PORT_COLOR, PORT_NAME, WHO_COLOR, WHO_NAME, addNode, canLink, copy, fileUrl, flush, insert, insideGroup, link, live, loadState, nodeOf, openGraph,
-  paste, redo, reloadDoc, removeNodes, runLlm, runTo, tOf, touch, typeTitle, undo, withGroups } from '../lib/graphDoc'
+import { ADD_MENU, GE, ICON, LINES, PORT_COLOR, PORT_Y, PORT_NAME, WHO_COLOR, WHO_NAME, addNode, canLink, copy, fileUrl, flush, insert, insideGroup, link, live, loadState, nodeOf, openGraph,
+  paste, portsOf, redo, reloadDoc, removeNodes, runLlm, runTo, tOf, touch, typeTitle, undo, withGroups } from '../lib/graphDoc'
 import { QL } from '../lib/consts'
 import { mins, mmss } from '../lib/format'
 
@@ -33,7 +36,7 @@ const { t } = useI18n()
 // the add menu offers only the types this server has (a page newer than the server it talks to)
 const known = (ty: string) => !!GE.types[ty]
 const loaded = ref(false)
-const menu = ref<'' | 'add'>('')
+const menu = ref<'' | 'add' | 'lines'>('')
 const tplOpen = ref(false)
 const tplWin = ref<InstanceType<typeof TemplatesModal> | null>(null)
 const { setViewport, zoomIn, zoomOut, viewport, dimensions, getSelectedNodes, getSelectedEdges, getNodes, getEdges, addSelectedNodes, addSelectedElements,
@@ -42,7 +45,11 @@ let fitted = false
 function fitOnce() { if (!fitted) { fitted = true; fitAll(0) } }
 // «Весь граф»: the whole graph below the tool bar that floats over the canvas's top (Vue Flow's fitView pads every
 // side alike, and the top row went under the bar); a node not measured yet counts as 240 x 200
-const TOP = 64, PAD = 24
+// A big graph is not shrunk below FIT_MIN (the nodes' words stay readable): from there the view starts at the graph's
+// top left corner and the rest is a pan away.
+const PAD = 24, FIT_MIN = 0.3
+const bars = ref<HTMLElement | null>(null)
+const barsH = () => (bars.value ? bars.value.offsetTop + bars.value.offsetHeight + 8 : 64)
 function fitAll(duration = 300) {
   const ns = getNodes.value
   if (!ns.length) return
@@ -52,11 +59,24 @@ function fitAll(duration = 300) {
   const x0 = Math.min(...box.map((r) => r.x)), y0 = Math.min(...box.map((r) => r.y))
   const b = { x: x0, y: y0, width: Math.max(...box.map((r) => r.x + r.w)) - x0, height: Math.max(...box.map((r) => r.y + r.h)) - y0 }
   const W = dimensions.value.width, H = dimensions.value.height
-  const zoom = Math.max(0.05, Math.min(1, (W - 2 * PAD) / b.width, (H - TOP - PAD) / b.height))
-  setViewport({ x: (W - b.width * zoom) / 2 - b.x * zoom, y: TOP + (H - TOP - PAD - b.height * zoom) / 2 - b.y * zoom, zoom }, { duration })
+  const TOP = barsH()
+  const zoom = Math.max(FIT_MIN, Math.min(1, (W - 2 * PAD) / b.width, (H - TOP - PAD) / b.height))
+  const x = b.width * zoom > W - 2 * PAD ? PAD - b.x * zoom : (W - b.width * zoom) / 2 - b.x * zoom
+  const y = b.height * zoom > H - TOP - PAD ? TOP - b.y * zoom : TOP + (H - TOP - PAD - b.height * zoom) / 2 - b.y * zoom
+  setViewport({ x, y, zoom }, { duration })
 }
 
-// «Упорядочить»: the selection (two or more nodes, a group with what is in it) or the whole graph, by its flow
+// a port's middle down from its node's top: as Vue Flow measured the handle when the node is drawn (exact, borders and
+// all), else by the node's port rows (graphDoc.portsOf / PORT_Y - a big graph draws only what is on screen)
+function portOf(id: string, handle: string, side: 'source' | 'target') {
+  const n = findNode(id), hb = n?.handleBounds?.[side]?.find((h) => h.id === handle)
+  if (hb) return hb.y + hb.height / 2
+  if (!n) return PORT_Y(0)
+  const { ins, outs } = portsOf(tOf(n as any), n.data as any)
+  return PORT_Y(Math.max(0, (side === 'source' ? outs : ins).findIndex(([p]) => p === handle)))
+}
+// «Упорядочить»: the selection (two or more nodes, a group with what is in it) or the whole graph, by its flow; the
+// links then go «ступеньками», unless «плавные» was chosen for this graph
 function arrangeNodes() {
   const sel = withGroups(selected())
   // a big graph draws only what is on screen: a node not drawn is as big as the biggest drawn one of its kind
@@ -68,10 +88,20 @@ function arrangeNodes() {
   const moved = arrange(sel.length >= 2 ? sel : null, (id) => {
     const n = findNode(id), d = n?.dimensions
     return d?.width ? { w: d.width, h: d.height } : typical[n ? tOf(n as any) : ''] || { w: 260, h: 260 }
-  })
-  if (!moved) return banner(sel.length >= 2 ? t('graph.selArranged') : t('graph.graphArranged'))
+  }, portOf)
+  const lines = !GE.lines
+  if (lines) GE.lines = 'step'
+  if (!moved && !lines) return banner(sel.length >= 2 ? t('graph.selArranged') : t('graph.graphArranged'))
   touch(0)   // a save, and so an undo step: Ctrl+Z brings the old layout back
   nextTick(() => fitAll())
+}
+
+// «Линии»: how this graph's links are drawn (kept in its document; a change is an undo step like any edit)
+function setLines(v: typeof LINES[number]) {
+  menu.value = ''
+  if (GE.lines === v) return
+  GE.lines = v
+  touch(0)
 }
 
 const job = computed(() => live())
@@ -183,6 +213,14 @@ function dragStop() { inside = []; touch(300) }
 async function setSetting(k: string, v: unknown) {
   try { GE.proj = await api(`/api/projects/${props.id}`, { method: 'PUT', body: { settings: { [k]: v } } }); await loadState() } catch (e) { banner((e as Error).message) }
 }
+// «Стиль проекта»: kept in the project's settings; the writers go stale (their signature has it), the scenes' prompts
+// take the new look at once (app/graph.look_text)
+const styleChoice = computed<LookChoice>(() => { const st = GE.proj?.settings || {}; return { delivery: st.delivery || 'auto', look: st.look || 'auto', look_own: st.look_own || '' } })
+const stylePick = computed(() => (GE.nodes.map((n) => (n.data as any)?.plan?.look_pick).find(Boolean) || null) as Pick | null)
+async function setStyle(v: LookChoice) {
+  try { GE.proj = await api(`/api/projects/${props.id}`, { method: 'PUT', body: { settings: { delivery: v.delivery, look: v.look, look_own: v.look_own } } }); await loadState() }
+  catch (e) { banner((e as Error).message) }
+}
 // the frame by hand: one side typed, the other stays as it is (the auto size until both are set); an emptied field
 // returns the frame to the format's size; the server snaps to the model's step, the field then shows what it kept
 async function setSize(k: 'w' | 'h', e: Event) {
@@ -236,7 +274,9 @@ onUnmounted(() => { off?.(); flush(); removeEventListener('keydown', onKey); rem
         @connect="onConnect" @node-click="onNode" @pane-click="GE.sel = null" @node-drag-start="dragStart" @node-drag="drag" @node-drag-stop="dragStop">
         <template #node-gnode="n"><EditNode :id="n.id" :data="n.data" :selected="n.selected" /></template>
         <template #node-ggroup="n"><GroupNode :id="n.id" :data="n.data" :selected="n.selected" /></template>
+        <template #edge-default="e"><GraphEdge v-bind="e" /></template>
       </VueFlow>
+      <div ref="bars" class="graph-bars">
       <div class="graph-tools" @click.stop>
         <router-link class="ghost" to="/"><Icon name="back" />{{ t('graph.videos') }}</router-link>
         <span class="sep" />
@@ -253,11 +293,24 @@ onUnmounted(() => { off?.(); flush(); removeEventListener('keydown', onKey); rem
         <button type="button" class="ghost" @click="fitAll()"><Icon name="expand" />{{ t('graph.wholeGraph') }}</button>
         <button type="button" class="ghost" :title="t('graph.arrangeTitle', { only: getSelectedNodes.length >= 2 ? t('graph.arrangeOnly') : '' })"
           @click="arrangeNodes"><Icon name="arrange" />{{ t('graph.arrange') }}</button>
+        <div class="tool-menu"><button type="button" class="ghost nowrap" :aria-expanded="menu === 'lines'" :title="`${t('graph.lines')}: ${t(`graph.line.${GE.lines || 'smooth'}`)} — ${t('graph.linesTitle')}`"
+            @click="menu = menu === 'lines' ? '' : 'lines'"><Icon name="lines" />{{ t('graph.lines') }}: {{ t(`graph.line.${GE.lines || 'smooth'}`) }}<span aria-hidden="true"> ▾</span></button>
+          <div v-if="menu === 'lines'" class="tm-pop"><span class="tm-hint">{{ t('graph.lines') }}: {{ t('graph.linesTitle').toLowerCase() }}</span>
+            <button v-for="v in LINES" :key="v" type="button" class="tm-node" :class="{ on: (GE.lines || 'smooth') === v }" :aria-pressed="(GE.lines || 'smooth') === v" @click="setLines(v)">
+              <span class="tm-tx"><b>{{ t(`graph.line.${v}`) }}</b><small>{{ t(`graph.lineHint.${v}`) }}</small></span></button>
+          </div></div>
         <button type="button" class="ghost" :aria-label="t('graph.zoomIn')" @click="zoomIn({ duration: 200 })"><Icon name="plus" /></button>
         <button type="button" class="ghost" :aria-label="t('graph.zoomOut')" @click="zoomOut({ duration: 200 })"><Icon name="minus" /></button>
         <span class="sep" /><GuideButton guide="graph-edit" />
         <button type="button" class="guide-btn" :title="t('graph.keysTitle')" @click.stop="S.keys = true"><Icon name="grip" :size="16" /><span>{{ t('graph.keys') }}</span></button>
         <span class="sep" /><span class="view-only">{{ GE.saving ? t('graph.saving') : t('graph.saved') }}</span>
+      </div>
+      <!-- «Стиль проекта»: the delivery and the look for every scene; a scene may change its own (◆ on its card) -->
+      <div class="graph-style" @click.stop>
+        <span class="gst-lbl">{{ t('looks.projectStyle') }}</span>
+        <LookPick variant="chips" :video="GE.proj?.settings.video_model || 'h3'" :model-value="styleChoice" :pick="stylePick" :disabled="!!job" @update:model-value="setStyle" />
+        <span class="muted small">{{ t('looks.inherit') }} · {{ t('looks.rebuild') }}</span>
+      </div>
       </div>
     </div>
 

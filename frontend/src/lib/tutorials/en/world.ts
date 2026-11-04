@@ -7,7 +7,7 @@ export default scenario('world', 'A video without people',
   meta('For a 30 s video: a draft on LTX takes 3.5–4 min, on FastWan about 4 min without sound. No face needs keeping, so any model will do.')
   + steps(
     step('Choose «No people»',
-      '<p>On the home screen, the «Writer» way: «Who\'s in frame» → «No people». In «Idea», the place, time of day, weather and what changes: «a misty pine forest at dawn, rays break through the branches, the fog thins, a deer steps out in the distance». «Mood»: «Documentary» for nature, «Fantasy and effects» for magic and the elements.</p>'
+      '<p>On the home screen, the «Writer» way: «Who\'s in frame» → «No people». In «Idea», the place, time of day, weather and what changes: «a misty pine forest at dawn, rays break through the branches, the fog thins, a deer steps out in the distance». «Delivery»: «Documentary» or «Meditative» for nature; «Look»: «Enchanted forest» or «Epic fantasy» for magic and the elements.</p>'
       + go('/', 'Open the home screen')),
     step('Click «Write the scenes»',
       'The writer writes the «world» — a description of the place that goes into every scene word for word — and the scenes. The whole video is one chain: the first scene is new, and each next one starts where the previous one ended.',

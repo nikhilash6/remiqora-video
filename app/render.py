@@ -101,9 +101,18 @@ def preroll(plan: dict, s: dict, length: Optional[int] = None) -> int:
     n = (plan.get("clip") or {}).get("preroll")
     if not isinstance(n, int) or isinstance(n, bool) or n <= 0 or not prompts.starts_from_photo(s):
         return 0
-    n = max(0, min(n, int((float(plan["clip"].get("from") or 0) + float(s.get("start") or 0)) * graphs.FPS + 1e-6)))
+    return preroll_fit(n, float(plan["clip"].get("from") or 0) + float(s.get("start") or 0),
+                       float(s.get("start") or 0), float(s.get("end") or 0), length)
+
+
+def preroll_fit(n: int, at: float, start: float, end: float, length: Optional[int] = None) -> int:
+    """preroll's frames: `n` asked, the scene's bar at `at` in the song (never before the song's start), its bar
+    `start`-`end` (in the same time the scene's own frames are counted in); `length` - the shot's frames, a shot
+    shorter than its bar and the preroll keeps only what is left before the bar. The graph's «Сцена» of a clip (its
+    `cut.pre`, graph.scene_frames) is fitted the same."""
+    n = max(0, min(n, int(at * graphs.FPS + 1e-6)))
     if length is not None:
-        bar = round(float(s.get("end") or 0) * graphs.FPS) - round(float(s.get("start") or 0) * graphs.FPS)
+        bar = round(end * graphs.FPS) - round(start * graphs.FPS)
         n = max(0, min(n, length - bar))
     return n
 
@@ -252,7 +261,7 @@ def lips_of(plan: dict, s: dict, mp4: Path, length: Optional[int] = None) -> Opt
     """A clip's singing scene: how much the lips move where the song's voice is (checks.py), None when not judged.
     `length`: the shot's frames (its preroll cut to fit the model's limit - preroll)."""
     clip = plan.get("clip") or {}
-    if not clip.get("song"):
+    if not clip.get("song") or prompts.nonperson_singer(plan, s):   # rules_v 5: a robot's or an animal's song has no lips
         return None
     from . import song
     try:
@@ -314,8 +323,8 @@ def hero_photo(proj: dict, plan: dict, s: dict) -> Optional[Path]:
     has one, when someone is in it and the face comes from a picture - its chain starts from a frame or a photo, or
     Ref2VA holds it (a scene from words alone draws a face of its own: another seed would not bring hers). None with
     nobody, with several people or without a photo."""
-    if plan.get("mode") == "none" or prompts.nobody(plan, s) or not prompts.has_people(s, plan):
-        return None
+    if plan.get("mode") == "none" or prompts.nobody(plan, s) or prompts.no_cast(plan, s) or not prompts.has_people(s, plan):
+        return None   # no_cast: someone else may be in it (a memory's woman) - never the hero's face
     head = prompts.opener_of(plan, s) or s
     if not (prompts.starts_from_photo(head) or prompts.uses_refs(plan, head) or prompts.uses_refs(plan, s)):
         return None
@@ -324,8 +333,17 @@ def hero_photo(proj: dict, plan: dict, s: dict) -> Optional[Path]:
     if len(people) != 1 or len(who) != 1:
         return None
     c = (plan.get("cast") or [])[who[0]]
+    if prompts.is_nonperson(c):
+        return None   # an animal, a robot or a creature has no face to check
     path = projects.folder(proj["id"]) / c["photo"] if c.get("photo") else projects.photo_path(proj)
     return path if path and path.exists() else None
+
+
+def face_ref(plan: dict, s: dict, start: Optional[Path], ref: list) -> Optional[Path]:
+    """The face a shot is checked against when the hero's portrait isn't (checks `face`): its start frame, else its
+    first Ref2VA photo. None in a scene the hero is not in (prompts.no_cast): an empty frame or a stranger's face is
+    nothing to retake a shot for."""
+    return None if prompts.no_cast(plan, s) or not prompts.faces_apply(plan) else start or (ref[0] if ref else None)
 
 
 def still_retake(plan: dict, s: dict) -> bool:
@@ -396,8 +414,8 @@ def facefix_of(s: dict) -> Optional[dict]:
 
 def facefix_text(plan: dict, s: dict) -> str:
     """Who is in the scene, for facefix.py's prompt: the looks of its people (the models then draw them, not someone)."""
-    if plan.get("mode") == "none":
-        return ""
+    if plan.get("mode") == "none" or prompts.no_cast(plan, s):
+        return ""   # the hero not in the scene: a look here would put the hero's face on whoever is there
     return "; ".join(x.get("en", "") for _, x in prompts.scene_cast(plan, s) if x.get("en"))
 
 
@@ -1035,7 +1053,7 @@ async def run(job: jobs.Job, pid: str) -> dict:
         # what was found when it was shot)
         # the face against the hero's own portrait when one hero with a photo is in it (`hero`, severe), else against
         # the start frame as before; `still` - an almost still shot with people
-        face = start or (ref[0] if ref else None)
+        face = face_ref(plan, s, start, ref)
         hero = hero_photo(proj, plan, s)
         people = plan["mode"] != "none" and not prompts.nobody(plan, s)
         singing = lips is not None and not checks.mute(lips)   # a singer standing still isn't a stall
@@ -1227,7 +1245,7 @@ async def shoot_take(job: jobs.Job, pid: str, index: int, seed: int) -> dict:
                              model=card.id, track=tpath,
                              track_start=tstart, old_prompt=None if vref else s["prompt"], ref=vref, end=end_frame(proj, s))
     if not shot["cached"]:   # the clip's checks, for the take's badge (a take the user asked for isn't retaken)
-        await asyncio.to_thread(checks.check_clip, shot["mp4"], start or (ref[0] if ref else None), hero_photo(proj, plan, s),
+        await asyncio.to_thread(checks.check_clip, shot["mp4"], face_ref(plan, s, start, ref), hero_photo(proj, plan, s),
                                 s.get("framing"), plan["mode"] != "none" and not prompts.nobody(plan, s))
     job.progress["stage"] = "done"
     return {"scene": index, "seed": seed, "key": shot["key"], "cached": shot["cached"], "seconds": shot["seconds"]}

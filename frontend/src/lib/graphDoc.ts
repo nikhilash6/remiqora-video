@@ -16,7 +16,8 @@ export interface NodeState { state: string; key: string | null; file: string | n
   text?: string; warn?: string; alpha?: string
   model?: string; ref_mode?: string; voice?: { sim: number | null; verdict: 'alike' | 'partly' | 'unlike' | null }
   checks?: { code: string; name: string; at: number; length: number; severe: boolean }[]   // a scene: its prompt with the spoken lines woven in; the face-drift warning
-  note?: { frames: number; faces: number; runs: number; anchors: number; fixed: number; seconds: Record<string, number> } }   // «Лица»: what it found (app/facefix.py)
+  note?: { frames: number; faces: number; runs: number; anchors: number; fixed: number; seconds: Record<string, number> }   // «Лица»: what it found (app/facefix.py)
+  piece?: [number, number] }   // «Песня»: the piece of the song the clip takes (song time)
 export interface GraphState { quality: string; width: number; height: number; auto_size: [number, number]; own_size: boolean
   rev: number; nodes: Record<string, NodeState>
   to_shoot: number; pictures: number; per_scene: number; seconds: number }
@@ -32,9 +33,13 @@ interface GEState {
   state: GraphState | null
   sel: string | null
   saving: boolean
+  lines: Lines                         // the links' look, kept in the graph's document ('' - never chosen: smooth)
 }
+// how the links are drawn: «плавные» (Vue Flow's bezier), «ступеньки» (right angles, rounded), «прямые» (straight)
+export type Lines = '' | 'smooth' | 'step' | 'straight'
+export const LINES = ['smooth', 'step', 'straight'] as const
 // typed by hand: Vue's unwrapping of Vue Flow's node type is too deep for TypeScript
-export const GE = reactive({ id: '', proj: null, types: {}, picture: '', nodes: [], edges: [], rev: 0, state: null, sel: null, saving: false }) as unknown as GEState
+export const GE = reactive({ id: '', proj: null, types: {}, picture: '', nodes: [], edges: [], rev: 0, state: null, sel: null, saving: false, lines: '' }) as unknown as GEState
 
 // the colour of a node's header: who does the work (the status strip's colours)
 export const WHO_COLOR: Record<string, string> = { h3: 'var(--accent)', writer: 'var(--ok)', ffmpeg: '#378ADD', user: 'var(--faint)', krea: '#f59e0b', v2v: '#14b8a6', facefix: '#2dd4bf', none: 'var(--rule-3)' }
@@ -46,13 +51,20 @@ export function labels<K extends string>(area: string, keys: readonly K[]): Reco
   return o
 }
 export const WHO_NAME: Record<string, string> = labels('nodes.who', ['h3', 'writer', 'ffmpeg', 'user', 'krea', 'v2v', 'facefix'])
-export const PORT_COLOR: Record<string, string> = { text: 'var(--soft)', look: 'var(--ok)', image: '#e879f9', clip: '#378ADD', video: '#378ADD', audio: '#eab308', lora: 'var(--accent-hi)' }
-export const PORT_NAME: Record<string, string> = labels('nodes.portType', ['text', 'look', 'image', 'clip', 'video', 'audio', 'lora'])
+export const PORT_COLOR: Record<string, string> = { text: 'var(--soft)', look: 'var(--ok)', image: '#e879f9', clip: '#378ADD', video: '#378ADD', audio: '#eab308', lora: 'var(--accent-hi)', song: '#f97316' }
+export const PORT_NAME: Record<string, string> = labels('nodes.portType', ['text', 'look', 'image', 'clip', 'video', 'audio', 'lora', 'song'])
 // a node's icon: one look each (lib/nodeHelp.ts says what each is for)
 export const ICON: Record<string, string> = { idea: 'bulb', hero: 'user', writer: 'quill', prompt: 'text', photo: 'image', picture: 'brush', scene: 'clapper', v2v: 'film', facefix: 'face',
-  frame: 'crop', sound: 'volume', lora: 'sliders', join: 'merge', montage: 'cut', track: 'music', music: 'mix', output: 'export', note: 'note', group: 'box' }
+  frame: 'crop', sound: 'volume', lora: 'sliders', join: 'merge', montage: 'cut', track: 'music', music: 'mix', output: 'export', note: 'note', group: 'box', song: 'music', clip_writer: 'pen' }
+// a node's ports in their rows (EditNode draws them so: an input on the left, an output on the right, row k at
+// PORT_Y(k) from the node's top - the handle's middle). A «Картинка» by Krea 2 has no «образцы» port (FLUX.2 Klein has it)
+export const PORT_Y = (k: number) => 50 + k * 24
+export function portsOf(t: string, data: Record<string, any>) {
+  const spec = GE.types[t]
+  return { ins: Object.entries(spec?.in || {}).filter(([p]) => !(p === 'ref' && t === 'picture' && data.model !== 'flux2')), outs: Object.entries(spec?.out || {}) }
+}
 export const PORT_LABEL: Record<string, string> = labels('nodes.port', ['text', 'look', 'image', 'idea', 'cast', 'prompt', 'start', 'end', 'faces', 'lora',
-  'frame', 'clip', 'clips', 'video', 'audio', 'voice', 'ref'])
+  'frame', 'clip', 'clips', 'video', 'audio', 'voice', 'ref', 'song', 'track'])
 // a node type's title in the interface's language (the server's /api/graph/types title - Russian - for a type the page
 // doesn't know); ruTitle - always the Russian one: the help finds a node's card by it (HelpQ term)
 export const typeTitle = (type: string): string => (type in nodesText.ru.title ? tr(`nodes.title.${type}`) : GE.types[type]?.title || type)
@@ -60,7 +72,7 @@ export const ruTitle = (type: string): string => (nodesText.ru.title as Record<s
 export const MAKES = ['picture', 'scene', 'v2v', 'facefix', 'sound', 'frame', 'join', 'montage', 'music', 'output']
 // the add menu, in the order of the work: a group's key (its name: t('graph.addGroup.<key>')) and its types
 export const ADD_MENU: [string, string[]][] = [
-  ['writer', ['idea', 'hero', 'writer']],
+  ['writer', ['idea', 'hero', 'writer', 'song', 'clip_writer']],
   ['scenes', ['prompt', 'photo', 'picture', 'scene', 'v2v', 'facefix', 'frame', 'sound', 'lora']],
   ['video', ['join', 'montage', 'track', 'music', 'output']],
   ['canvas', ['note', 'group']],
@@ -68,9 +80,14 @@ export const ADD_MENU: [string, string[]][] = [
 
 export const uid = () => Math.random().toString(16).slice(2, 10)
 export const rseed = () => 1 + Math.floor(Math.random() * 2147483646)
-// a scene's length: its own `seconds` (3-15), 5 when it says nothing; a prompt's - of the first scene it feeds
+// a scene's length: its own `seconds` (3-15), 5 when it says nothing; a prompt's - of the first scene it feeds. A clip's
+// scene (`cut`, made by «Сценарист клипа»: app/graph.seconds_of) is as long as its bars, fractions too
 export const SCENE_S = [3, 15] as const
-export const secondsOf = (n: Node | null) => { const v = Number((n?.data as any)?.seconds); return v >= SCENE_S[0] && v <= SCENE_S[1] ? Math.round(v) : 5 }
+export const secondsOf = (n: Node | null) => {
+  const d = (n?.data as any) || {}, v = Number(d.seconds)
+  if (d.cut && v > 0) return Math.min(SCENE_S[1], Math.max(0.5, v))
+  return v >= SCENE_S[0] && v <= SCENE_S[1] ? Math.round(v) : 5
+}
 export function feedSeconds(id: string) {
   const e = GE.edges.find((x) => x.source === id && x.targetHandle === 'prompt')
   return e ? secondsOf(nodeOf(e.target)) : 5
@@ -88,13 +105,14 @@ export const tOf = (n: Node) => (n.data as any).t as string
 export const live = () => S.jobs.find((j) => (j.kind === 'graph' || j.kind === 'graph-llm') && (j.status === 'running' || j.status === 'queued') && j.params?.project === GE.id)
 
 // the server's document <-> Vue Flow's arrays
-function toFlow(doc: { nodes: any[]; edges: any[]; rev: number }) {
+function toFlow(doc: { nodes: any[]; edges: any[]; rev: number; view?: any }) {
   GE.nodes = doc.nodes.map((n) => ({ id: n.id, type: n.type === 'group' ? 'ggroup' : 'gnode', position: n.position, data: { ...n.data, t: n.type },
     zIndex: n.type === 'group' ? -1 : undefined, draggable: true }))
   // a Krea 2 «Картинка» has no «образцы» (an older graph may still link a picture there: the server never read it)
   const krea = new Set(doc.nodes.filter((n) => n.type === 'picture' && n.data?.model !== 'flux2').map((n) => n.id))
   GE.edges = doc.edges.filter((e) => !(e.targetHandle === 'ref' && krea.has(e.target))).map(edgeFlow)
   GE.rev = doc.rev
+  GE.lines = (LINES as readonly string[]).includes(doc.view?.lines) ? doc.view.lines : ''
   saved = body()
 }
 export function edgeFlow(e: any): Edge {
@@ -109,6 +127,7 @@ function toDoc() {
     rev: GE.rev,
     nodes: GE.nodes.map((n) => { const { t, ...data } = n.data as any; return { id: n.id, type: t, position: { x: Math.round(n.position.x), y: Math.round(n.position.y) }, data } }),
     edges: GE.edges.map((e) => ({ id: e.id, source: e.source, sourceHandle: e.sourceHandle, target: e.target, targetHandle: e.targetHandle })),
+    ...(GE.lines ? { view: { lines: GE.lines } } : {}),
   }
 }
 
@@ -241,7 +260,7 @@ export function addNode(t: string, x: number, y: number, data: Record<string, an
     scene: { takes: [rseed()], take: 0 }, output: { output: { size: '1080p', hdr: false, fps48: false } },
     picture: { seed: rseed() }, writer: { seconds: 15, mode: 'auto', mood: 'cinematic live-action film', music: '', ref_photo: false },
     lora: { items: [] }, join: { order: [] }, group: { title: tr('nodes.title.group'), w: 720, h: 420 }, note: { text: '' },
-    frame: { at: 'last' }, sound: { voice: true }, v2v: { strength: 1, guide: 1, seed: rseed() }, facefix: { mode: 'far', strength: 1, seed: rseed() }, music: { volume: 0.9, scene_volume: 0.3, offset: 0, fade_in: 0.5, fade_out: 2 },
+    frame: { at: 'last' }, sound: { voice: true }, song: { length: 'whole' }, v2v: { strength: 1, guide: 1, seed: rseed() }, facefix: { mode: 'far', strength: 1, seed: rseed() }, music: { volume: 0.9, scene_volume: 0.3, offset: 0, fade_in: 0.5, fade_out: 2 },
   }
   // a free spot: down from where it was asked for, past the nodes it would lie on (a group's frame doesn't count)
   if (t !== 'group') {
@@ -333,6 +352,7 @@ export function insert(t: { nodes: any[]; edges: any[] }, x: number, y: number) 
     const data = JSON.parse(JSON.stringify(n.data || {}))
     if (n.type === 'join') data.order = (data.order || []).map((s: string) => ids[s] || s)
     if (n.type === 'montage') remapMontage(data, ids)
+    if (typeof data.from === 'string' && ids[data.from]) data.from = ids[data.from]   // a template's montage of its writer («Кино»)
     if (n.type === 'scene') { data.takes = (data.takes?.length ? data.takes : [0]).map(() => rseed()); data.take = 0 }
     return { id: ids[n.id], type: n.type === 'group' ? 'ggroup' : 'gnode', position: { x: x + n.position.x - minX, y: y + n.position.y - minY }, data: { ...data, t: n.type },
       zIndex: n.type === 'group' ? -1 : undefined }
@@ -356,8 +376,19 @@ export async function runLlm(ids: string[]) {
 }
 export async function expand(id: string) {
   await flush()
-  try { toFlow(await post(`/api/projects/${GE.id}/nodes/expand`, { node: id })); await loadState() }
-  catch (e) { banner((e as Error).message) }
+  const go = (edited: string) => post(`/api/projects/${GE.id}/nodes/expand`, { node: id, edited })
+  try {
+    let doc
+    try { doc = await go('ask') } catch (e) {
+      // «Сценарист клипа» again over nodes the user changed: replace them, or keep them as they are
+      const names = (e as any).status === 409 ? (e as any).detail?.edited : null
+      if (!names) throw e
+      doc = await go(confirm(tr('nodesPanel.clipw.edited', { list: names.join(', ') })) ? 'replace' : 'keep')
+    }
+    toFlow(doc)
+    if (doc.kept?.length) banner(tr('nodesPanel.clipw.kept', { list: doc.kept.join(', ') }))
+    await loadState()
+  } catch (e) { banner((e as Error).message) }
 }
 export async function upload(file: File, kind: 'image' | 'audio') {
   const fd = new FormData()

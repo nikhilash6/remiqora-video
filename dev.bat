@@ -23,7 +23,7 @@ if not exist "frontend\package.json" (
         exit /b 1
     )
     echo [Launcher] Starting Remiqora Video on http://127.0.0.1:8810 ...
-    start "Remiqora API" /D "%~dp0" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8810"
+    start "Remiqora API" /D "%~dp0" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8810 --log-config uvicorn_log.json"
     timeout /t 3 /nobreak >nul
     start http://127.0.0.1:8810
     echo Close the "Remiqora API" window to stop it.
@@ -52,7 +52,7 @@ if errorlevel 1 (
 
 :: 3. API with Python auto-reload, and Vite with browser hot-module replacement
 echo [Launcher] Starting API on http://127.0.0.1:8810 ...
-start "Remiqora API" /D "%~dp0" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8810 --reload --reload-dir app"
+start "Remiqora API" /D "%~dp0" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8810 --reload --reload-dir app --log-config uvicorn_log.json"
 echo [Launcher] Starting Vite on http://127.0.0.1:5173 ...
 start "Remiqora UI" /D "%~dp0frontend" cmd /k "npm run dev -- --host 127.0.0.1"
 

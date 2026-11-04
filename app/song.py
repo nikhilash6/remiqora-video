@@ -7,8 +7,10 @@ groove, break, drop, outro). Assumes 4/4 and one steady tempo. numpy + ffmpeg, ~
 
 The words: tools/lyrics/lyrics_worker.py (Demucs separates the vocals, faster-whisper writes the words with their
 times) as its own process in its own environment - torch never loads into the backend and the GPU memory is back
-when it exits; a GPU job in the queue (jobs.py), the video model freed first. The user's own text is aligned on the
-recognised words (timed_lines): their line breaks and fixed words keep real times.
+when it exits; a GPU job in the queue (jobs.py), the video model freed first. When the models work in the cloud
+(ENGINE=remote) the same tool runs on the server (/tools/*, engine/remote.py: the file goes there, the results come
+back) - this machine needs no engine environment. The user's own text is aligned on the recognised words
+(timed_lines): their line breaks and fixed words keep real times.
 
 A song lives in data/songs/<id>/ (id: the file's sha1), once for every clip made from it: the file, analysis.json,
 lyrics/ (lyrics.json, vocals.wav - the lips check of phase 11 reads it), text.txt (the user's words).
@@ -557,10 +559,7 @@ async def recognise(sid: str, on_message: Callable[[str], None] = lambda m: None
     song; Whisper's 3 GB are downloaded the first time). -> lyrics.json."""
     out = folder(sid) / "lyrics"
     out.mkdir(exist_ok=True)
-    args = [str(file_of(sid).resolve()), str(out.resolve()), "--model", config.LYRICS_MODEL]
-    if language:
-        args += ["--language", language]
-    code, error, tail = await _tool(args, on_message)
+    code, error, tail = await _run(file_of(sid), out, {"model": config.LYRICS_MODEL, "language": language}, on_message)
     rec = recognised(sid)
     if code != 0 or rec is None:
         raise EngineError(i18n.L("Слова не распознаны: ", "Words not recognized: ") + (error[0] if error else "\n".join(tail[-5:])))
@@ -573,12 +572,28 @@ async def separate(src: Path, dest: Path, on_message: Callable[[str], None] = la
     out = dest.parent / f"_{dest.stem}"
     out.mkdir(parents=True, exist_ok=True)
     try:
-        code, error, tail = await _tool([str(src.resolve()), str(out.resolve()), "--vocals-only"], on_message)
+        code, error, tail = await _run(src, out, {"vocals_only": True}, on_message)
         if code != 0 or not (out / "vocals.wav").exists():
             raise EngineError(i18n.L("Голос не отделён: ", "Voice not separated: ") + (error[0] if error else "\n".join(tail[-5:])))
         (out / "vocals.wav").replace(dest)
     finally:
         shutil.rmtree(out, ignore_errors=True)
+
+
+async def _run(src: Path, out: Path, opts: dict, on_message: Callable[[str], None]) -> tuple[int, list[str], list[str]]:
+    """lyrics_worker.py on src, its files into out: here, in its own environment - or on the cloud server when the
+    models work there (ENGINE=remote: no engine environment on this machine; the file goes there, vocals.wav and
+    lyrics.json come back). opts: model, language, vocals_only. -> (exit code, errors, the last lines)."""
+    if config.ENGINE == "remote":
+        from .engine import remote
+        return await remote.tool(src, out, {k: v for k, v in opts.items() if v}, on_message)
+    args = [str(src.resolve()), str(out.resolve())]
+    for opt in ("model", "language"):
+        if opts.get(opt):
+            args += [f"--{opt}", str(opts[opt])]
+    if opts.get("vocals_only"):
+        args.append("--vocals-only")
+    return await _tool(args, on_message)
 
 
 async def _tool(args: list[str], on_message: Callable[[str], None]) -> tuple[int, list[str], list[str]]:

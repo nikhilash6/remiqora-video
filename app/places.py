@@ -15,7 +15,7 @@ import time
 import uuid
 from typing import Optional
 
-from . import i18n, jobs, picture, projects, render
+from . import i18n, jobs, looks, picture, projects, render
 from .engine.comfy import EngineError
 from .planner import check
 
@@ -107,15 +107,13 @@ async def group(pid: str, seed: Optional[int] = None) -> dict:
     if not any(s.get("kind") == "new" for s in plan.get("scenes") or []):
         raise EngineError(i18n.L("В ролике нет новых сцен", "The video has no new scenes"))
     client.use_lang(i18n.plan_lang_name(plan))
-    user, schema, new = _ask(plan)
     t0 = time.time()
     async with client.session(plan.get("model")) as llm:
-        # a small model thinks before it answers (writer.propagate's budget): the tokens hold both
-        d = await llm.chat_json(SYSTEM, user, schema, temperature=0.3, seed=seed or int(time.time()) % 100000, max_tokens=3000)
+        got = await ask(llm, plan, seed)
     cur = projects.load(pid)   # the user may have edited meanwhile: only the places go in
     p = cur["plan"]
     before = {x.get("photo") for x in p.get("places") or [] if x.get("drawn")}
-    _apply(p, d.get("places") or [], [s["index"] for s in p["scenes"] if s.get("kind") == "new"])
+    _apply(p, got, [s["index"] for s in p["scenes"] if s.get("kind") == "new"])
     if not p["places"]:
         raise EngineError(i18n.L("Сценарист не собрал места — попробуйте ещё раз", "The writer gathered no places - try again"))
     kept = {x.get("photo") for x in p["places"]}
@@ -125,6 +123,24 @@ async def group(pid: str, seed: Optional[int] = None) -> dict:
     p["places_by"] = {"model": llm.model.name, "seconds": round(time.time() - t0, 1)}
     cur["plan"] = check.plan(p)
     return projects.save(cur)
+
+
+async def ask(llm, plan: dict, seed: Optional[int] = None) -> list[dict]:
+    """The writer's grouping of the plan's new scenes, as it answers ([{name_ru, en, scenes}]); `llm` - an open
+    session. group() puts it on a project, the graph's «Сценарист клипа» on its own plan (graph.write_clip)."""
+    user, schema, _ = _ask(plan)
+    # a small model thinks before it answers (writer.propagate's budget): the tokens hold both
+    d = await llm.chat_json(SYSTEM, user, schema, temperature=0.3, seed=seed or int(time.time()) % 100000, max_tokens=3000, step="places")
+    return d.get("places") or []
+
+
+def gather(plan: dict, got: list[dict]) -> None:
+    """The writer's grouping (ask) onto a plan that is not a project's (the graph's): its places matched by name keep
+    their ids. None gathered - EngineError, as group() says it."""
+    _apply(plan, got, [s["index"] for s in plan["scenes"] if s.get("kind") == "new"])
+    if not plan["places"]:
+        plan.pop("places", None)
+        raise EngineError(i18n.L("Сценарист не собрал места — попробуйте ещё раз", "The writer gathered no places - try again"))
 
 
 def assign(plan: dict, s: dict, place: Optional[str]) -> None:
@@ -141,6 +157,11 @@ def prompt_of(plan: dict, x: dict) -> str:
     materials and light from. Not the video's style: it often dresses the hero («deep blue velvet, embroidery») and Krea
     paints her into the place (2026-10-29, three places of three); the place's words carry its light and colors, and
     the frame gets the style from its own prompt."""
+    if looks.needs_frame(plan):   # a look drawn by every frame: the place painted in its technique (the look's own words)
+        frag = looks.look_of(plan)["style_en"]
+        return (f"{frag[:1].upper()}{frag[1:]}, not a photograph. An establishing shot of an empty location with nobody in "
+                f"it: {x['en'].rstrip('.')}. Wide shot at eye level, the whole place and its light readable. "
+                "No people, no person, no figure, no clothing, no animals, no text, no watermark.")
     return (f"Photorealistic cinematic establishing shot of an empty location with nobody in it: {x['en'].rstrip('.')}. "
             "Wide shot at eye level, deep focus, the whole place and its light readable. "
             "No people, no person, no figure, no clothing, no animals, no text, no watermark.")

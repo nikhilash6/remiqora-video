@@ -33,6 +33,8 @@ def plan(p: dict) -> dict:
     if isinstance(p.get("clip"), dict):
         _bare(p["clip"], "photo")
     edit.ensure_ids(p)   # the montage points at scenes by id (phase 8)
+    from .. import looks
+    looks.migrate(p)     # an older plan's mood -> «Подача» / «Вид» (its brief stays the old one: looks.active)
     places.tidy(p)       # «Места»: a scene points at a place that is there
     for s in p.get("scenes") or []:   # a scene's own model (phase 11): a known one, on the scene that opens a chain
         if s.get("model") not in videomodels.CARDS or s.get("kind") == "continue":

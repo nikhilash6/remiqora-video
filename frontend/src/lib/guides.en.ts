@@ -51,18 +51,18 @@ export const GUIDES_EN: Record<string, Guide> = {
   },
 
   idea: {
-    title: 'Help: the «Idea» screen', icon: 'spark',
-    lead: 'Where a video begins: a couple of sentences, the length, the frame shape, the model and the mood. «Write the scenes» hands the idea to the writer: it breaks it into scenes (5 s on H3 and WAN, 10 s on LTX), and the storyboard opens.',
+    title: 'Help: home, «What are we shooting?»', icon: 'spark',
+    lead: 'Where a video begins: an idea in words or dropped files — a song, a photo, a video. The studio works out what to make («Understood as»). «Make the video» — the autopilot to a finished video, «Step by step» — the storyboard, where everything is edited before shooting.',
     steps: [
-      { title: 'Describe the idea', text: 'Who, where, what happens and how it ends. The more concrete, the more connected the scenes.' },
-      { title: 'Add a photo', text: 'Optional: the first frame of the video or only the hero\'s look.' },
-      { title: 'Set up the video', text: 'Length, frame 16:9 / 9:16 / 1:1, model, mood, who is in the shot, music.' },
-      { title: 'Write the scenes', text: 'The writer writes the storyboard: 20–30 s for a 30 s video.' },
+      { title: 'Describe or drop', text: 'An idea in words; three ways in: «Song → clip», «Photo → hero», «Video → first frame» (or drop a file). «Not right? Change ▾» — choose otherwise.' },
+      { title: 'Set it up', text: 'One row: «Delivery · Look», frame 16:9 / 9:16, length. Fine settings — who is in the shot, music; LoRA — under the steps of the route.' },
+      { title: 'How we shoot', text: 'The route Words → Script → Hero → Places → Frames → Shooting → Montage: each step shows its time, the estimate on top. The switch in a tile skips a step, «Script» — «I write», «Shooting» — the model choice. «Ask me» puts stops on the hero and a trial scene.' },
+      { title: 'Make the video', text: 'The same route becomes the progress bar: steps, time, «Stop». Or «Step by step» — the storyboard.' },
     ],
     map: { cols: 'minmax(0, 1fr) minmax(0, 1.6fr)', areas: ['form how', 'form reels'], zones: [
-      { area: 'form', title: 'The form on the left', text: 'How to start: Writer, Clip, Own prompts, Graph. Idea, photo, length, frame, model, mood, who is in the shot, music and «Write the scenes».', accent: true, deco: 'rows' },
-      { area: 'how', title: 'How it works', text: 'Four steps: idea, storyboard, video, montage, shown while there are no videos yet.' },
-      { area: 'reels', title: 'Your videos', text: 'Search and the «Storyboards / Graphs» filter; each card shows the kind and the state: «writing…», «shooting…», «check 2», «done».', deco: 'reels' },
+      { area: 'form', title: 'What are we shooting?', text: 'The idea and files box, «Understood as», «Delivery · Look», frame, length, the «How we shoot» route, «Make the video» and «Step by step»; the links «Fine settings», «Own prompts», «Clip: all settings»; under the box — «Or build it on the canvas» with graph templates.', accent: true, deco: 'rows' },
+      { area: 'how', title: 'The stage bar', text: 'A running autopilot: the stage, the time left, «Stop», «Open and fix».' },
+      { area: 'reels', title: 'Your videos', text: 'All / Clips / Stories / Drafts / Ready, search and «More filters»; a card shows the cover, length, «Delivery · Look» and the state.', deco: 'reels' },
     ] },
     sections: [
       { title: 'Photo', icon: 'image', items: [
@@ -81,23 +81,23 @@ export const GUIDES_EN: Record<string, Guide> = {
         'A 5 s draft scene: about 1.5 min on H3 (a 30 s video takes some 10 minutes), about half a minute on LTX, about 40 s on FastWan, about 2 min on WAN.',
       ] },
       { title: 'A clip from a song', icon: 'music', items: [
-        'The «Clip» switch above the form: a song, lyrics (recognized automatically), «Singer\'s photo», who is in the shot, frame, model, and «Write the clip».',
+        'A song in the «What are we shooting?» box makes a clip; «Clip: all settings» under the box: a song, lyrics (recognized automatically), «Singer\'s photo», who is in the shot, frame, model, and «Write the clip».',
         'Scenes are cut on the song\'s bars; where the voice sings, the hero sings their lines. LTX 2.3 can do this.',
       ] },
       { title: 'Without the writer', icon: 'pen', items: [
-        'The «Own prompts» switch above the form: an empty storyboard of the length you need; you write each scene\'s prompt yourself, in English.',
-        '«Graph» above the form: a graph project from a template or from an empty canvas.',
+        'The «Own prompts» link under the box: an empty storyboard of the length you need; you write each scene\'s prompt yourself, in English.',
+        '«Or build it on the canvas» under the box: a click on a template or «Empty canvas» opens the graph at once.',
       ] },
     ],
     tips: [
       '«A girl in a red coat walks along a riverside at night in the rain, stops by a street lamp and smiles»: place, light, weather, clothes and an ending make connected scenes.',
-      'The mood sets the style of the whole video: light, color, pace, camera.',
+      'The delivery is how the story is told (the rules of the script, cameras, inserts), the look is how the picture looks (the start of the style, the rules of the hero look). «Writer decides» picks them by the idea.',
     ],
     limits: [
       'A model with sound composes its own music in every scene, and WAN has no sound at all: for one tune across the whole video, put your own track on the storyboard.',
       'The photo is described by a writer that can see pictures («sees photos» in the model list in the header).',
     ],
-    more: [{ id: 'idea', title: 'The «Idea» screen' }, { id: 'clip', title: 'A clip from a song' }, { id: 'prompt', title: 'How to write a prompt' }],
+    more: [{ id: 'idea', title: 'Home: «What are we shooting?»' }, { id: 'auto', title: 'Make the video' }, { id: 'clip', title: 'A clip from a song' }, { id: 'prompt', title: 'How to write a prompt' }],
   },
 
   board: {
@@ -310,7 +310,7 @@ export const GUIDES_EN: Record<string, Guide> = {
       { title: 'Try variants', text: '«Another take», «Duplicate branch», several outputs.' },
     ],
     map: { cols: 'minmax(0, 1fr) minmax(8rem, 30%)', areas: ['tools side', 'canvas side'], zones: [
-      { area: 'tools', title: 'Bar above the canvas', text: 'Videos, «Add», «Templates», «Whole graph», zoom, «Help», «Keys».' },
+      { area: 'tools', title: 'Bar above the canvas', text: 'Videos, «Add», «Templates», «Whole graph», «Arrange» (links as straight lines), «Lines: smooth / steps / straight», zoom, «Help», «Keys».' },
       { area: 'canvas', title: 'Canvas', text: 'Nodes and links. The header shows who works, a port what flows through it, the bottom the state.', deco: 'nodes' },
       { area: 'side', title: 'Panel on the right', text: 'The selected node: its fields and buttons. Nothing selected: the project: quality, «Shoot all», outputs, «Clear takes», «Build a storyboard».', accent: true },
     ] },
@@ -357,7 +357,7 @@ export const GUIDES_EN: Record<string, Guide> = {
         '«Rewrite outdated» runs all such nodes in one job, so the model loads once.',
       ] },
       { title: 'Templates and JSON', icon: 'layers', items: [
-        '«Templates» above the canvas: 16 built-in ones, from «Idea → writer → video» to «Trailer: five places», with a thumbnail of the graph and a note on what to do first; «Graph» among the ways to start on the home screen also comes from a template.',
+        '«Templates» above the canvas: 18 built-in ones, from «Idea → writer → video» to «Film» for two, with a thumbnail of the graph and a note on what to do first; on the home, «Or build it on the canvas» also starts from a template, in one click.',
         '«Save as template» and «Download as JSON»: the selected nodes or the whole graph; «Load from JSON»: the file becomes your template.',
         'Photos, tracks and the writer\'s output don\'t go into a template, only nodes, links and texts.',
       ] },
@@ -368,6 +368,7 @@ export const GUIDES_EN: Record<string, Guide> = {
     ],
     tips: [
       'Start from a template: «Two endings», «Clip to your own track», «Dialogue of two». The links are already in place, and the template\'s note says what to change.',
+      'A clip from a song in parts — the «Song → clip» template: the «Clip writer» writes as the «Song → clip» button does, «Expand into scenes» lays out scenes on the bars, places, frames and a «Join on the bars» with the face check; then your own intro, a second ending, a short version.',
       'Ctrl + Z undoes any edit, even deleting the whole graph.',
       'Until a scene\'s copy is changed, its key stays the same, so it is shot once.',
     ],

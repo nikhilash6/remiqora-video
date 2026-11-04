@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "install" / "manifest.json"
 # Names only an official repository may carry: a set must never point at an uncensored repack
-FORBIDDEN = ("uncensored", "eros", "abliterated", "heretic", "nsfw")
+FORBIDDEN = ("uncensored", "eros", "abliterated", "heret", "nsfw")
 
 
 def token() -> str | None:

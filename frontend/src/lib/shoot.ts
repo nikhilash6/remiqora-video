@@ -65,6 +65,12 @@ export function useShoot(p: () => Plan) {
   const quick = computed(() => !!est.value && est.value.to_shoot === 0 && !dirty.value.length)
   return { st, q, cur, eta, est, done, mainLabel, mainIcon, note, model, modelWarn, foreign, foreignLora, dirty, noFrame, stale, unlike, quick }
 }
+// how much of the video is shot - one count for the header's rail and the board's bar: the scenes whose shot the
+// estimate at the video's quality does not ask for again (null while the estimate is not there yet)
+export function shotCount(n: number): { done: number; all: number } | null {
+  const e = P.proj && P.est ? P.est[P.proj.settings?.quality || 'draft'] : null
+  return n && e && e.to_shoot != null ? { done: Math.max(0, n - e.to_shoot), all: n } : null
+}
 // scene numbers for a line of text: «3, 5, 8» - the first eight, then «…»
 export const sceneList = (ix: number[]) => ix.slice(0, 8).map((i) => i + 1).join(', ') + (ix.length > 8 ? '…' : '')
 // «Перерисовать непохожие» (app/frames.py unlike): the scenes whose drawn frame is not like the hero, one job; a new

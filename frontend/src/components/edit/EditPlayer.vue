@@ -83,9 +83,10 @@ function look(i: number, op: number, other = 0) {
 function gain(t: number) {
   const tr = track.value
   if (!tr) return 0
-  const fi = tr.fade_in || 0, fo = tr.fade_out || 0, d = ED.duration
+  const fi = tr.fade_in || 0, fo = tr.fade_out || 0, d = ED.duration, local = t - (tr.delay || 0)
   let g = Math.min(1, tr.volume ?? 0.9)
-  if (fi > 0 && t < fi) g *= t / fi
+  if (local < 0) return 0
+  if (fi > 0 && local < fi) g *= local / fi
   if (fo > 0 && t > d - fo) g *= Math.max(0, (d - t) / fo)
   return Math.max(0, Math.min(1, g))
 }
@@ -112,9 +113,13 @@ function syncSounds(force = false) {
 function syncMusic(force = false) {
   const m = music.value, tr = track.value
   if (!m || !tr) return
-  const target = (tr.offset || 0) + ED.t
+  // a graph's song «по тактам» after an intro of your own comes in this late (`delay`): silent before it
+  const local = ED.t - (tr.delay || 0)
+  if (local < 0) { if (!m.paused) m.pause(); return }
+  const target = (tr.offset || 0) + local
   if (force || Math.abs(m.currentTime - target) > 0.4) m.currentTime = target
   m.volume = gain(ED.t)
+  if (ED.playing && m.paused && waitingFor === null) m.play().catch(() => {})
 }
 
 // a still frame where the playhead stands
@@ -149,7 +154,7 @@ function play() {
   const v = vid(k)
   if (ED.clips[k].file && v) { v.volume = volOf(k); v.playbackRate = ED.clips[k].speed; v.play().catch(() => {}) }
   wall = performance.now()
-  if (track.value && music.value) { syncMusic(true); music.value.play().catch(() => {}) }
+  if (track.value && music.value) syncMusic(true)
   syncSounds(true)
   raf = requestAnimationFrame(tick)
 }
@@ -181,7 +186,7 @@ function tick(now: number) {
     const next = ED.clips[k + 1], nv = vid(k + 1)
     if (next?.file && nv) { nv.playbackRate = next.speed; nv.volume = 0; nv.play().catch(() => {}) }
     wall = now
-    if (track.value && music.value) { syncMusic(true); music.value.play().catch(() => {}) }
+    if (track.value && music.value) syncMusic(true)
     syncSounds(true)
   }
   // the clock: the video's own time, or the wall clock over a scene not shot

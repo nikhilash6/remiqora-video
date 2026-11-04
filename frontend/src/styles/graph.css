@@ -10,6 +10,9 @@ body.graph .head { flex: none; }
 .graph-tools { position: absolute; left: 16px; top: 14px; z-index: 5; display: flex; align-items: center; gap: 2px; padding: 4px 6px; border-radius: 10px;
   background: var(--panel); border: 1px solid var(--rule); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
 .graph-tools .ghost { text-decoration: none; }
+.graph-tools .nowrap { white-space: nowrap; }
+/* the tool bar's pop-ups («Добавить», «Линии») open over the «Стиль проекта» bar under it, not beneath it */
+.graph-canvas .graph-bars > .graph-tools { position: relative; inset: auto; z-index: 6; }
 .graph-tools .sep { width: 1px; height: 20px; background: var(--rule); margin: 0 4px; }
 .graph-tools .view-only { font-size: 12px; color: var(--faint); padding: 0 4px 0 2px; }
 
@@ -158,6 +161,7 @@ body.graph .head { flex: none; }
 .graph-canvas .ge-clip .vue-flow__edge-path, .graph-canvas .ge-video .vue-flow__edge-path { stroke: #378ADD; }
 .graph-canvas .ge-audio .vue-flow__edge-path { stroke: #eab308; }
 .graph-canvas .ge-lora .vue-flow__edge-path { stroke: var(--accent-hi); stroke-dasharray: 5 4; }
+.graph-canvas .ge-song .vue-flow__edge-path { stroke: #f97316; }
 .graph-canvas .vue-flow__edge.selected .vue-flow__edge-path { stroke-width: 3.5; filter: drop-shadow(0 0 3px rgba(255, 255, 255, .5)); }
 .graph-canvas .vue-flow__connection-path { stroke: var(--accent-hi); stroke-width: 2; }
 .graph-canvas .vue-flow__selection { background: rgba(168, 85, 247, .08); border: 1px solid var(--accent); }
@@ -219,10 +223,12 @@ body.graph .head { flex: none; }
   scrollbar-width: thin; scrollbar-color: var(--rule-3) transparent; scrollbar-gutter: stable; }
 .tm-hint { font-size: 12px; color: var(--muted); padding: 6px 10px 4px; line-height: 1.4; }
 .tm-pop .tm-node { align-items: flex-start; gap: 10px; padding: 7px 10px; }
+.tm-pop .tm-node.on { background: var(--hover); box-shadow: inset 2px 0 0 var(--accent); }
 .tm-ic { flex: none; display: inline-flex; width: 26px; height: 26px; align-items: center; justify-content: center; border-radius: 7px; background: var(--deep); }
 .tm-tx { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .tm-tx b { font-weight: 500; font-size: 13.5px; }
 .tm-tx small { font-size: 12px; color: var(--muted); line-height: 1.35; }
+.ge-think { margin: 8px 10px 0; }   /* a writer node's thinking (WriterThinking.vue, compact) */
 .ge-need { display: flex; align-items: flex-start; gap: 5px; margin: 8px 10px 0; padding: 6px 8px; border-radius: 7px; font-size: 11.5px; line-height: 1.35;
   color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); border: 1px dashed color-mix(in srgb, var(--accent) 50%, transparent);
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }

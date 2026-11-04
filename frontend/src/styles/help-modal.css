@@ -152,6 +152,8 @@ body.modal-open { overflow: hidden; }
   .hm-back { padding: 0; }
   .hm-panel { border-radius: 0; min-height: 100vh; }
   .hm-body { max-height: none; flex: 1; padding: 18px 16px 22px; }
+  .hm-panel { overflow: visible; }
+  .hm-foot { position: sticky; bottom: 0; z-index: 1; }   /* the page scrolls on a phone: the window's buttons stay in sight */
   .gm-cols, .gm-boxes, .gm-screens, .km-grid { grid-template-columns: 1fr; }
   .gm-map { grid-template-columns: 1fr !important; grid-template-areas: none !important; }
   .gm-map .gm-zone { grid-area: auto !important; }

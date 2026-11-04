@@ -8,6 +8,7 @@ import { useI18n } from 'vue-i18n'
 import Icon from './Icon.vue'
 import ProjectRail from './ProjectRail.vue'
 import StatusBar from './StatusBar.vue'
+import CloudChip from './CloudChip.vue'
 import { S, reloadWords } from '../lib/store'
 import { setLocale, type LocaleCode } from '../i18n'
 
@@ -28,6 +29,7 @@ function pickLocale(next: LocaleCode) {
       <span class="brand-t"><b>Remiqora Video</b><small>{{ t('header.tagline') }}</small></span></router-link>
     <ProjectRail />
     <div class="status">
+      <CloudChip />
       <StatusBar />
       <nav class="pages" :aria-label="t('header.section')">
         <router-link v-if="view === 'lab'" to="/" class="nav-ic" :title="t('header.studioTitle')"><Icon name="film" /><span>{{ t('header.studio') }}</span></router-link>

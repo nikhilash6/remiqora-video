@@ -12,8 +12,10 @@ import GuideButton from './help/GuideButton.vue'
 import ModelPick from './ModelPick.vue'
 import LoraCard from './LoraCard.vue'
 import SongStrip from './SongStrip.vue'
+import LookPick from './LookPick.vue'
 import { api, post } from '../lib/api'
-import { S, banner, keep, onJobEnd } from '../lib/store'
+import { formChoice, toForm, type LookChoice } from '../lib/looks'
+import { S, banner, keep, onJobEnd, pickClipVideo } from '../lib/store'
 import { ASPECTS, GENDERS, MODES } from '../lib/consts'
 import { dec, mmss } from '../lib/format'
 import type { Song } from '../lib/types'
@@ -22,6 +24,9 @@ const router = useRouter()
 const { t } = useI18n()
 const f = S.form
 const set = (k: keyof typeof f, v: any) => { (f as any)[k] = v; keep() }
+// «Подача» and «Вид» (two selects, the same panel as the idea screen's)
+const choice = computed(() => formChoice(f))
+const setChoice = (v: LookChoice) => { Object.assign(f, toForm(v)); keep() }
 const song = ref<Song | null>(null)
 const loading = ref(false)
 const over = ref(false)
@@ -97,7 +102,8 @@ async function uploadPhoto(file?: File) {
   fd.append('file', file)
   try { set('photo', await api('/api/frames', { method: 'POST', body: fd })) } catch (e) { banner((e as Error).message) }
 }
-const sings = computed(() => (S.cfg?.video_models || []).find((m) => m.id === f.clipVideo))
+const clipVideo = computed(() => pickClipVideo(f.clipVideo))   // the picked model while installed, else one that shoots to the track
+const sings = computed(() => (S.cfg?.video_models || []).find((m) => m.id === clipVideo.value))
 const ltx23 = computed(() => (S.cfg?.video_models || []).find((m) => m.id === 'ltx23'))
 
 // «Что пишет сценарист»: the hero's look (the writer's, the user's words, a photo), the story (the writer's, the idea as
@@ -118,7 +124,7 @@ async function write() {
   const all = scenes.value === 'all'
   try {
     const r = await post('/api/clips', { song: f.song, start: from.value, seconds: secs.value, idea: f.idea, mode: f.mode, aspect: f.aspect,
-      mood: 'Клип', photo: people && look.value === 'photo' && f.photo ? f.photo.name : null, model: S.llm || null, video_model: f.clipVideo || 'ltx23',
+      delivery: choice.value.delivery, look_id: choice.value.look, look_own: choice.value.look_own, photo: people && look.value === 'photo' && f.photo ? f.photo.name : null, model: S.llm || null, video_model: clipVideo.value,
       look: people ? look.value : 'writer', look_ru: f.clipLookRu || '', gender: f.clipGender || 'female', story: story.value, scenes: scenes.value,
       // Krea and FLUX run only when the user asks (they can be started later on the storyboard)
       loras: f.loras || [], pic_loras: f.picLoras || {},
@@ -152,7 +158,7 @@ watch(() => f.song, (id) => { if (id && id !== song.value?.id) load(id) })
           <Icon :name="head !== null ? 'stop' : 'play'" :size="13" />{{ head !== null ? t('idea.clip.listenStop') : t('idea.clip.listen') }}</button>
         <audio ref="audio" :src="`/api/songs/${song.id}/file`" preload="none" @timeupdate="onTime" @ended="head = null" @pause="head = null" />
         <label class="link-btn" style="cursor:pointer">{{ t('idea.clip.another') }}<input type="file" accept="audio/*,.mp3,.wav,.m4a,.flac,.ogg" hidden @change="upload(($event.target as HTMLInputElement).files?.[0])"></label></div>
-      <SongStrip :song="song" :from="from" :to="to" :head="head" editable @pick="set('songFrom', $event)" @seek="seek" />
+      <SongStrip :song="song" :from="from" :to="to" :head="head" editable @pick="set('songFrom', $event)" @range="(a, s) => { set('songFrom', a); set('songSecs', s) }" @seek="seek" />
       <div class="chips"><button v-for="[s, l] in LENS" :key="s" type="button" class="chip" :class="{ on: f.songSecs === s }" @click="set('songSecs', s)">{{ l }}</button>
         <span class="muted chips-note">{{ mmss(from) }}–{{ mmss(to) }} · ≈ {{ t('idea.scenesN', scenesAbout) }}</span></div>
       <p class="muted clip-hint">{{ t('idea.clip.clickWave') }}</p>
@@ -177,6 +183,8 @@ watch(() => f.song, (id) => { if (id && id !== song.value?.id) load(id) })
   <label class="stack"><span class="lbl">{{ t('idea.idea') }} <small>{{ t('idea.optional') }}</small> <HelpQ id="clip" term="Идея клипа" /></span>
     <textarea class="field-in" rows="3" :value="f.idea" :placeholder="t('idea.clip.ideaPh')"
       @input="set('idea', ($event.target as HTMLTextAreaElement).value)" /></label>
+  <div class="stack"><span class="lbl">{{ t('looks.delivery') }} · {{ t('looks.look') }} <HelpQ id="idea" term="Вид" /></span>
+    <LookPick :model-value="choice" :video="clipVideo" @update:model-value="setChoice" /></div>
   <div class="stack"><span class="lbl">{{ t('idea.who') }} <HelpQ id="idea" term="Кто в кадре" /></span>
     <div class="chips"><button v-for="[m, l] in MODES" :key="m" type="button" class="chip" :class="{ on: f.mode === m }" @click="set('mode', m)">{{ l }}</button></div></div>
   <!-- what the writer writes: the hero's look, the story, the scenes - the rest is the user's -->
@@ -212,9 +220,9 @@ watch(() => f.song, (id) => { if (id && id !== song.value?.id) load(id) })
   <div class="stack"><span class="lbl">{{ t('idea.frame') }}</span>
     <div class="chips"><button v-for="[a, w, h] in ASPECTS" :key="a" type="button" class="chip" :class="{ on: f.aspect === a }" @click="set('aspect', a)"><i class="box" :style="{ width: w + 'px', height: h + 'px' }" />{{ a }}</button></div></div>
   <div class="stack"><span class="lbl">{{ t('idea.model') }} <small>{{ t('idea.clip.modelLater') }}</small></span>
-    <ModelPick :model-value="f.clipVideo" compact @update:model-value="set('clipVideo', $event)" />
+    <ModelPick :model-value="clipVideo" compact @update:model-value="set('clipVideo', $event)" />
     <p v-if="sings && !sings.track && ltx23 && f.mode !== 'none'" class="muted clip-hint"><Icon name="music" :size="13" /> {{ ltx23.missing.length ? t('idea.clip.singsNoWeights', { a: ltx23.name, b: sings.name }) : t('idea.clip.sings', { a: ltx23.name, b: sings.name }) }}</p></div>
-  <LoraCard :video="f.clipVideo || 'ltx23'" :loras="f.loras || []" :pics="f.picLoras || {}"
+  <LoraCard :video="clipVideo" :loras="f.loras || []" :pics="f.picLoras || {}"
     :off="{ krea: f.mode === 'none' || scenes !== 'all' || !((look === 'writer' && f.clipSinger === true) || (f.clipFrames === true && f.clipPlaces === true)), flux2: f.mode === 'none' || scenes !== 'all' || f.clipFrames !== true }"
     @update:loras="set('loras', $event)" @update:pics="set('picLoras', $event)" />
   </div>

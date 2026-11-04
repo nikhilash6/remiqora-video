@@ -16,6 +16,7 @@ from typing import Optional
 
 from . import config, downloads, i18n, lora_prefs, settings
 from .engine.worker import KINDS
+from .cloud import state as cloud_state
 
 REPO_H3 = "Comfy-Org/MiniMax-H3"
 REPO_WAN22 = "Comfy-Org/Wan_2.2_ComfyUI_Repackaged"
@@ -173,11 +174,66 @@ def find_file(key: str) -> Optional[Path]:
     return _files(s.kind).get(getattr(config, key)) if s else None
 
 
+def has_file(key: str) -> bool:
+    """Whether the worker that shoots would find the slot's file: in ENGINE=remote the cloud server's disk (the same
+    list the Models page shows), else this computer's. A cloud server with no list at all yet is not second-guessed:
+    the shot goes there and the worker says what is missing."""
+    cloud = _cloud()
+    if cloud is None:
+        return find_file(key) is not None
+    s = next((x for x in SLOTS if x.key == key), None)
+    if not s:
+        return False
+    if cloud.get("source") == "none":
+        return True
+    return getattr(config, key) in _cloud_files(s.kind, cloud)
+
+
 def _gb(n: Optional[int]) -> Optional[float]:
     return round(n / 2**30, 2) if n else None
 
 
-def _row(name: str, path: Optional[Path], repo: Optional[str], src: Optional[str], dest: Path, current: str) -> dict:
+def _cloud() -> Optional[dict]:
+    """ENGINE=remote: what lies on the cloud server's disk (cloud/files.py; None on this computer)."""
+    if config.ENGINE != "remote":
+        return None
+    from .cloud import files
+    return files.view()
+
+
+def _where() -> dict:
+    """The menu's «Где работают модели» row: the mode and, in the cloud, which server and what it does now."""
+    from .cloud import manager
+    from .cloud.providers import PROVIDERS
+    d = cloud_state.load()
+    out: dict = {"mode": d["mode"]}
+    pod = d.get("pod")
+    if d["mode"] == "cloud":
+        out.update(provider=PROVIDERS[d["provider"]].name if d["provider"] in PROVIDERS else d["provider"],
+                   gpu=(pod or {}).get("gpu_name"), price=(pod or {}).get("price"),
+                   status="deploying" if manager.DEPLOY["running"] else manager.LIVE.get("status") if pod else "none")
+    elif d["mode"] == "server":
+        out["host"] = (d.get("server") or {}).get("url", "").split("//")[-1].split("/")[0]
+    return out
+
+
+def _cloud_files(kind: str, cloud: dict) -> dict[str, tuple[str, int]]:
+    """name -> (path on the server's disk, bytes) of the cloud's weight files of this kind."""
+    out: dict[str, tuple[str, int]] = {}
+    for rel, size in cloud["files"].items():
+        top, _, rest = rel.partition("/")
+        if rest and top in KINDS[kind] and rel.lower().endswith(WEIGHT_EXT):
+            out.setdefault(rest.rsplit("/", 1)[-1], (rel, size))
+    return out
+
+
+def _row(name: str, path: Optional[Path], repo: Optional[str], src: Optional[str], dest: Path, current: str,
+         remote: Optional[tuple[str, int]] = None, cloud: bool = False) -> dict:
+    if cloud:   # a file on the cloud disk (or not there): nothing of it lies here, nothing is downloaded here
+        size = remote[1] if remote else (downloads.size(repo, src) if repo else None)
+        return {"name": name, "installed": bool(remote), "path": remote[0] if remote else None, "folder": remote[0].rsplit("/", 1)[0] if remote else str(dest),
+                "size": size, "gb": _gb(size), "repo": repo, "src": src, "url": f"https://huggingface.co/{repo}/blob/main/{src}" if repo else None,
+                "selected": name == current, "partial": 0, "download": None, "cloud": True}
     size = path.stat().st_size if path else (downloads.size(repo, src) if repo else None)
     return {"name": name, "installed": bool(path), "path": str(path) if path else None, "folder": str(path.parent if path else dest),
             "size": size, "gb": _gb(size), "repo": repo, "src": src, "url": f"https://huggingface.co/{repo}/blob/main/{src}" if repo else None,
@@ -185,19 +241,20 @@ def _row(name: str, path: Optional[Path], repo: Optional[str], src: Optional[str
             "download": downloads.state(repo, src) if repo else None}
 
 
-def slot_view(s: Slot) -> dict:
-    files, current = _files(s.kind), getattr(config, s.key)
+def slot_view(s: Slot, cloud: Optional[dict] = None) -> dict:
+    remote = _cloud_files(s.kind, cloud) if cloud else None   # in the cloud the server's disk is the truth, not this one
+    files, current = ({} if cloud else _files(s.kind)), getattr(config, s.key)
     dest = folders(s.kind, s.section)[0]
     rows, names = [], set()
     for repo, src in s.sources:
         name = src.rsplit("/", 1)[-1]
         names.add(name)
-        rows.append(_row(name, files.get(name), repo, src, dest, current))
-    for name, p in files.items():   # the user's own files of this role
+        rows.append(_row(name, files.get(name), repo, src, dest, current, remote.get(name) if cloud else None, bool(cloud)))
+    for name, p in (remote or files).items():   # the user's own files of this role
         low = name.lower()
         if name not in names and any(m in low for m in s.match) and not any(x in low for x in s.skip) and not low.endswith(".gguf"):   # no ComfyUI-GGUF on the worker
-            rows.append(_row(name, p, None, None, dest, current))
-    found = files.get(current)
+            rows.append(_row(name, None if cloud else p, None, None, dest, current, p if cloud else None, bool(cloud)))
+    found = (remote or files).get(current)
     return {"key": s.key, "section": s.section, "title": _t(s.title), "text": _t(s.text), "current": current,
             "ok": bool(found), "files": rows, "dest": str(dest)}
 
@@ -209,11 +266,15 @@ def _llm_view() -> dict:
     except llm.LLMError:
         default = None
     ms = []
-    for m in llm.models():
-        size = m.path.stat().st_size + (m.mmproj.stat().st_size if m.mmproj else 0)
+    try:
+        found = llm.models()
+    except llm.LLMError:   # the cloud server not up yet (a deploy, a stopped pod): the page shows no writer models
+        found = []
+    for m in found:
+        size = m.bytes or (m.path.stat().st_size + (m.mmproj.stat().st_size if m.mmproj else 0))   # a cloud model: its size from the server
         ms.append({**m.public(), "path": str(m.path), "gb": _gb(size), "default": m.id == default})
     return {"models": ms, "dirs": [str(d) for d in config.LLM_DIRS], "ctx": config.LLM_CTX, "contexts": list(settings.CONTEXTS),
-            "server": str(config.LLAMA_SERVER_BIN), "server_ok": config.LLAMA_SERVER_BIN.exists(),
+            "server": str(config.LLAMA_SERVER_BIN), "server_ok": config.ENGINE == "remote" or config.LLAMA_SERVER_BIN.exists(),
             "dest": str(config.LLM_DIRS[-1]) if config.LLM_DIRS else None}
 
 
@@ -284,7 +345,8 @@ def _params(sec: str) -> list[dict]:
 
 def snapshot() -> dict:
     from .engine.comfy import COMFY
-    slots = [slot_view(s) for s in SLOTS]
+    cloud = _cloud()
+    slots = [slot_view(s, cloud) for s in SLOTS]
     sections = {}
     from . import timings, videomodels
     for sec, title in (("h3", i18n.L("Видео H3", "H3 video")), ("ref", "Ref2VA"), *MODEL_SECTIONS.items()):
@@ -336,7 +398,9 @@ def snapshot() -> dict:
         s["params"] = _params(k)
     total = sum(s["gb"] or 0 for k, s in sections.items() if k != "tools")
     act = downloads.active()
-    return {"sections": sections, "gb": round(total, 1), "engine": {"state": COMFY.state(), "own": config.COMFY_DIR == config.OWN_ENGINE},
+    return {"sections": sections, "gb": round(total, 1), "engine_mode": cloud_state.load()["mode"], "where": _where(),
+            "cloud_files": {"source": cloud["source"], "at": cloud["at"], "count": len(cloud["files"]),
+                            "loras": sorted(k[len("loras/"):] for k in cloud["files"] if k.startswith("loras/"))} if cloud else None, "engine": {"state": COMFY.state(), "own": config.COMFY_DIR == config.OWN_ENGINE},
             "roots": [str(d) for d in config.H3_MODEL_ROOTS], "ref_dir": str(config.H3_REF_DIR),
             "ref_tool": _tool("H3_REF_DIR", i18n.L("Папка Ref2VA", "Ref2VA folder"), i18n.L("В ней diffusion_models и loras", "Holds diffusion_models and loras"), "folder"),
             "downloading": act.public() if act else None, "token": downloads.has_token(), "settings": settings.current()}

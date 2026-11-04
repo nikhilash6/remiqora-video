@@ -1,0 +1,88 @@
+{
+ "name": "Film",
+ "about": "A short film with two heroes and dialogue: an idea, the heroes, a writer with lines, «Expand into scenes» — the heroes' faces in each of their scenes, a montage that checks the faces.",
+ "order": 16,
+ "nodes": [
+  {
+   "id": "note",
+   "type": "note",
+   "position": {"x": 0, "y": -340},
+   "data": {
+    "text": "Film: a short film for two.\n\n1. Idea — who, where, what they talk about, how it ends. Change it for your film.\n2. Two heroes — their looks and clothes are written in. Your own photo: «Hero photo» → «Describe from photo». Without a photo «Expand» draws each of them a portrait (Krea 2) — their face in the scenes.\n3. Writer — a minute, «several» people, «Lines» and «Keep the face» are on. «Write» — the scenes, each saying who is in it and what they say.\n4. «Expand into scenes» — prompts and scenes appear on the right; each scene's «faces» input gets the faces of the heroes in it (Ref2VA), the lines go to the same heroes (Character 1, Character 2). The scenes go into the «Montage».\n5. Click the empty canvas → «Draft» → «Shoot all». MiniMax H3 shoots it: it speaks the lines itself and keeps the faces from the portraits.\n6. The «Montage» with «Check the faces»: before the join each scene is checked against its own heroes' faces; an unlike one is shot again (up to 2 rounds). The video is in the «Output».\n\nChanged the idea or a hero — the Writer is marked «Rewrite», then «Expand» again: the scenes' seeds stay."
+   }
+  },
+  {
+   "id": "idea",
+   "type": "idea",
+   "position": {"x": 0, "y": 0},
+   "data": {
+    "title": "Idea",
+    "text": "Night, an empty bus stop on the edge of town, a light drizzle. A young woman waits for the last bus. A stranger with an umbrella walks up and asks whether the 42 still runs. They get talking: both of them missed something important tonight. The bus never comes, but they are not cold any more. In the end he opens the umbrella over her and they walk away together."
+   }
+  },
+  {
+   "id": "h1",
+   "type": "hero",
+   "position": {"x": 0, "y": 260},
+   "data": {
+    "title": "She",
+    "gender": "female",
+    "age": 27,
+    "en": "a 27-year-old woman with long wavy chestnut hair, soft hazel eyes, delicate beautiful features and a slim build",
+    "outfit_en": "a cream knitted scarf over a camel wool coat",
+    "ru": "27 лет, красивая, длинные волнистые каштановые волосы, мягкие карие глаза, тонкие черты, стройная. Кремовый вязаный шарф поверх пальто цвета кэмел."
+   }
+  },
+  {
+   "id": "h2",
+   "type": "hero",
+   "position": {"x": 0, "y": 560},
+   "data": {
+    "title": "He",
+    "gender": "male",
+    "age": 31,
+    "en": "a 31-year-old man with short dark hair, light stubble, grey eyes and a tall lean build",
+    "outfit_en": "a dark navy raincoat over a grey sweater, holding a black umbrella",
+    "ru": "31 год, короткие тёмные волосы, лёгкая щетина, серые глаза, высокий, худощавый. Тёмно-синий плащ поверх серого свитера, чёрный зонт."
+   }
+  },
+  {
+   "id": "w",
+   "type": "writer",
+   "position": {"x": 360, "y": 120},
+   "data": {
+    "title": "Writer",
+    "seconds": 60,
+    "mode": "several",
+    "mood": "cinematic live-action film",
+    "music": "soft rain, a distant city, no music",
+    "ref_photo": true,
+    "lines": true
+   }
+  },
+  {
+   "id": "m",
+   "type": "montage",
+   "position": {"x": 4600, "y": 120},
+   "data": {
+    "title": "Montage",
+    "from": "w",
+    "faces": true
+   }
+  },
+  {
+   "id": "o",
+   "type": "output",
+   "position": {"x": 4940, "y": 120},
+   "data": {
+    "output": {"size": "1080p", "hdr": false, "fps48": false}
+   }
+  }
+ ],
+ "edges": [
+  {"id": "idea-text-w-idea", "source": "idea", "sourceHandle": "text", "target": "w", "targetHandle": "idea"},
+  {"id": "h1-look-w-cast", "source": "h1", "sourceHandle": "look", "target": "w", "targetHandle": "cast"},
+  {"id": "h2-look-w-cast", "source": "h2", "sourceHandle": "look", "target": "w", "targetHandle": "cast"},
+  {"id": "m-video-o-video", "source": "m", "sourceHandle": "video", "target": "o", "targetHandle": "video"}
+ ]
+}

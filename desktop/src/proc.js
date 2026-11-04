@@ -23,6 +23,11 @@ function killTree(child) {
   });
 }
 
+/** The desktop app's version for its children (the installed app ships no desktop/package.json); '' under plain Node. */
+function appVersion() {
+  try { return require('electron').app.getVersion(); } catch { return ''; }
+}
+
 /** Environment for child processes: the app's own, minus the switch that would turn Electron binaries into plain Node. */
 function cleanEnv(extra = {}) {
   const env = { ...process.env, ...extra };
@@ -64,4 +69,4 @@ function runCommand(cmd, args, { cwd, env, onLine = () => {}, signal, logFile } 
   });
 }
 
-module.exports = { spawnTree, killTree, cleanEnv, runCommand };
+module.exports = { spawnTree, killTree, cleanEnv, runCommand, appVersion };

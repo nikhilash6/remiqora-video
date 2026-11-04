@@ -14,8 +14,10 @@ const writer = computed(() => {
   const r = S.llms
   if (!r) return null
   const m = r.models.find((x) => x.id === S.llm)
+  if (!m && r.deploying?.length)   // a cloud deploy is running: the writer's models are on their way, not missing
+    return { name: r.deploying[0].replace(/-GGUF$|\.gguf$/i, ''), ok: true, problem: '', note: t('header.deploying') }
   const problem = !r.server_ok ? t('header.noServer') : !m ? t('header.noGguf') : ''
-  return { name: m ? m.name.replace(/-GGUF$|\.gguf$/i, '') : '', ok: !problem, problem }
+  return { name: m ? m.name.replace(/-GGUF$|\.gguf$/i, '') : '', ok: !problem, problem, note: '' }
 })
 </script>
 
@@ -25,11 +27,14 @@ const writer = computed(() => {
       <span class="foot-brand"><span class="foot-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="white" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 7l5.5 11 5.5-11" /></svg></span>
         <span><b>Remiqora Video</b> · © {{ year }} {{ t('header.author') }}</span></span>
       <span class="foot-facts">
-        <span :title="t('header.localTitle')">
+        <span v-if="S.sys?.where && S.sys.where !== 'local'" :title="t('header.cloudTitle')">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18a4 4 0 0 1-.6-7.95A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9H7Z" /></svg>
+          {{ t(S.sys.where === 'cloud' ? 'header.cloud' : 'header.ownServer') }}</span>
+        <span v-else :title="t('header.localTitle')">
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3ZM9 12l2 2 4-4" /></svg>
           {{ t('header.local') }}</span>
-        <router-link v-if="writer" to="/models/llm" class="foot-writer" :title="writer.ok ? t('header.writerOk') : writer.problem">
-          <i class="foot-dot" :class="writer.ok ? 'ok' : 'bad'" />{{ t('header.writer') }}<b v-if="writer.name">{{ writer.name }}</b><em v-if="!writer.ok">{{ writer.problem }}</em></router-link>
+        <router-link v-if="writer" to="/models/llm" class="foot-writer" :title="writer.ok ? t(S.sys?.where && S.sys.where !== 'local' ? 'header.writerCloud' : 'header.writerOk') : writer.problem">
+          <i class="foot-dot" :class="writer.ok ? 'ok' : 'bad'" />{{ t('header.writer') }}<b v-if="writer.name">{{ writer.name }}</b><em v-if="!writer.ok">{{ writer.problem }}</em><em v-else-if="writer.note">{{ writer.note }}</em></router-link>
       </span>
       <nav class="foot-links" :aria-label="t('header.help')">
         <router-link to="/help">{{ t('header.help') }}</router-link>

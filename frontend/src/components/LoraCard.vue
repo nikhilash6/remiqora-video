@@ -50,7 +50,7 @@ const remove = (k: Key, id: string) => put(k, listOf(k).filter((u) => u.id !== i
         <div class="lcard-who"><b>{{ r.title }}</b><small>{{ r.off ? t('loraset.row.off') : r.sub }}</small></div>
         <div class="lcard-chips">
           <LoraChip v-for="u in r.list" :key="u.id" :name="u.name" :strength="u.strength" @update:strength="setStrength(r.k, u.id, $event)" @remove="remove(r.k, u.id)" />
-          <LoraAdd :groups="[{ key: r.k, items: r.lib.filter((l) => !r.list.some((u) => u.id === l.id)), total: r.lib.length }]" :more="!!r.list.length" @pick="(_k, l) => add(r.k, l)" />
+          <LoraAdd :groups="[{ key: r.k, items: r.lib.filter((l) => !r.list.some((u) => u.id === l.id)), total: r.lib.length }]" :more="!!r.list.length" :disabled="r.off" @pick="(_k, l) => add(r.k, l)" />
         </div>
       </div>
       <p class="lcard-note">{{ t('loraset.cardNote') }}</p>

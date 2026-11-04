@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 
-from .. import i18n, videomodels
+from .. import i18n, looks, videomodels
 from . import prompts
 
 _SAME = re.compile(r" \(the same (?:person )?in every shot\)")   # the lock's words for H3's Ref2VA and chains
@@ -29,7 +29,26 @@ def for_model(model: str, plan: dict, scene: dict) -> str:
     c = videomodels.shooter(videomodels.card(model))
     if c.id == "h3" or prompts.is_raw(scene) or not prompts.is_written(scene):
         return scene.get("prompt") or ""
-    return _wan(c, plan, scene) if videomodels.family(c) == "wan5b" else _ltx(c, plan, scene)
+    text = _wan(c, plan, scene) if videomodels.family(c) == "wan5b" else _ltx(c, plan, scene)
+    return no_signs(text) if plan.get("rules_v") else text   # an older plan's prompt (and key) as it was
+
+
+# a sign in the picture is drawn with letters LTX can't spell («EAR WAING» over an empty station, 2026-11-03), though the
+# writer is told not to write signs: a plan written since (writer.RULES_V) gets lights instead. Not a «no text» phrase -
+# at CFG 1 the words draw what they forbid (videomodels._NO_TEXT)
+_SIGNS = re.compile(r"\b(?:(?:shop|street|neon|station|store)\s+)?(signage|signboards?|signs?|billboards?)\b", re.I)
+
+
+_VERB_BEFORE = re.compile(r"\b(?:she|he|they|who|to|and)\s*$", re.I)   # «she signs the paper» is a verb
+
+
+def no_signs(text: str) -> str:
+    def one(m: re.Match) -> str:
+        if _VERB_BEFORE.search(text[:m.start()]):
+            return m.group(0)
+        w = m.group(1).lower()
+        return "lights" if w == "signage" or w.endswith("s") else "light"
+    return _SIGNS.sub(one, text)
 
 
 def _parts(c: videomodels.Card, plan: dict, scene: dict) -> dict:
@@ -44,10 +63,11 @@ def _parts(c: videomodels.Card, plan: dict, scene: dict) -> dict:
     who = _SAME.sub("", prompts.lock_text(plan, scene))
     if plan["mode"] == "none":   # the lock is the world, the place what the frame shows now: the world first
         who, place = "", _join(who, place)
-    empty = prompts.formula(plan) >= 2 and prompts.nobody(plan, scene)   # formula 2 (prompts.compose): no look where nobody is
+    bare = prompts.no_cast(plan, scene)   # the hero not in it (prompts.compose): no look of theirs
+    empty = (prompts.formula(plan) >= 2 or bare) and prompts.nobody(plan, scene)   # formula 2 (prompts.compose): no look where nobody is
     hold = prompts.held(plan, scene)
     return {"style": prompts._sentence(plan.get("style_en", "")),
-            "who": "" if empty else who,
+            "who": "" if empty or bare else who,
             "place": place,
             "action": videomodels.timeline_sentences(c, prompts.scene_timeline(plan, scene)),
             "camera": f"The framing of the picture, {prompts.hold_camera(scene)}." if hold else f"{framing}, {cam}.",
@@ -70,7 +90,8 @@ def _ltx(c: videomodels.Card, plan: dict, scene: dict) -> str:
     tail = "No people." if x["none"] else LTX_EMPTY if x["empty"] else ""
     if x["hold"]:
         who = x["who"] if (scene.get("frame") or {}).get("empty") else ""   # a frame drawn empty that people come into
-        return _join(LTX_HOLD, who, x["action"], x["camera"], audio, tail)
+        # a look drawn by every frame: the motion, then one phrase of the technique (looks.tech; "" otherwise)
+        return _join(LTX_HOLD, who, x["action"], x["camera"], looks.tech(plan), audio, tail)
     return _join(x["style"], x["place"], x["who"], x["action"], x["camera"], audio, tail)
 
 
@@ -78,7 +99,7 @@ def _wan(c: videomodels.Card, plan: dict, scene: dict) -> str:
     """Who, where, the motion, the camera, the look; from a frame - the motion and the camera only."""
     x = _parts(c, plan, scene)
     if scene["kind"] == "continue" or prompts.starts_from_photo(scene):
-        return _join(x["action"], x["camera"])
+        return _join(x["action"], x["camera"], looks.tech(plan) if x["hold"] else "")
     return _join(x["who"], x["place"], x["action"], x["camera"], x["style"], "No people." if x["none"] or x["empty"] else "")
 
 

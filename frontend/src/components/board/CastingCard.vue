@@ -17,6 +17,7 @@ import { S, banner } from '../../lib/store'
 import { P, flushSave, projectCall, scheduleSave } from '../../lib/project'
 import { shotPng } from '../../lib/board'
 import { GENDERS } from '../../lib/consts'
+import HeroKind from './HeroKind.vue'
 import type { Plan } from '../../lib/types'
 
 const { t } = useI18n()
@@ -28,9 +29,15 @@ const several = computed(() => props.p.mode === 'several')
 const cur = ref(0)
 watch(() => cast.value.length, (n) => { if (cur.value >= n) cur.value = Math.max(0, n - 1) })
 const c = computed(() => cast.value[cur.value] || {})
+// who the hero is (no kind = a person: older plans); age and gender are a person's, an animal's sex shows only when set
+const kind = computed<string>(() => c.value.kind || 'person')
+const isPerson = computed(() => kind.value === 'person')
+const showGender = computed(() => isPerson.value || (!!c.value.gender && c.value.gender !== 'other'))
+const showOutfit = ref(false)
+watch(cur, () => { showOutfit.value = false })
 const file = (f: string) => `/api/projects/${proj.value.id}/files/${encodeURIComponent(f)}`
 const photoOf = (x: Record<string, any>) => (x.photo ? file(x.photo) : x.from_photo && proj.value.settings.photo ? `/api/projects/${proj.value.id}/photo` : null)
-const nameOf = (x: Record<string, any>, i: number) => x.name || (cast.value.length > 1 ? t('board.cast.heroN', { n: i + 1 }) : x.gender === 'female' ? t('board.look.heroine') : t('board.look.hero'))
+const nameOf = (x: Record<string, any>, i: number) => x.name || (cast.value.length > 1 ? t('board.cast.heroN', { n: i + 1 }) : x.gender === 'female' && (x.kind || 'person') === 'person' ? t('board.look.heroine') : t('board.look.hero'))
 // the scenes a hero is in: with several people their own «who», else all of them
 const scenesOf = (i: number) => several.value ? props.p.scenes.filter((s) => (s.who || []).includes(i + 1)).length : props.p.scenes.length
 
@@ -40,17 +47,34 @@ function setCast(k: string, v: string) {
   const x = cast.value[cur.value]
   if (k === 'age') x.age = Math.max(21, +v || 21)
   else x[k] = v
-  if (['ru', 'outfit_ru', 'gender', 'age'].includes(k)) {
+  if (k === 'kind' && v !== 'person') { x.age = 0; if (x.gender !== 'female' && x.gender !== 'male') x.gender = 'other' }
+  if (k === 'kind' && v === 'person' && !x.age) x.age = 30
+  if (['ru', 'outfit_ru', 'gender', 'age', 'kind'].includes(k)) {
     x.ru_dirty = true
     if (photoOf(x)) x.photo_stale = true   // the portrait shows the look before the edit
   }
   scheduleSave(); flushSave()
 }
+// «Своё описание»: the user's words replace the look and the outfit; the writer puts them into English (only by the button)
+const ownText = ref('')
+const ownErr = ref('')
+watch(cur, () => { ownText.value = ''; ownErr.value = '' })
+async function ownGo() {
+  const text = ownText.value.trim()
+  if (!text) { ownErr.value = t('board.cast.ownEmpty'); return }
+  ownErr.value = ''
+  const x = cast.value[cur.value]
+  x.ru = text; x.outfit_ru = ''; x.ru_dirty = true; x.from_user = true
+  if (photoOf(x)) x.photo_stale = true
+  ownText.value = ''
+  await flushSave()
+  try { S.jobs = [...S.jobs, await post(`/api/projects/${proj.value.id}/rewrite`, { how: 'looks', scenes: [cur.value] })] } catch (e) { banner((e as Error).message) }
+}
 const stale = computed(() => !!c.value.photo_stale && !!photoOf(c.value))
 const lookBox = ref<HTMLTextAreaElement>()
 const toLook = () => { lookBox.value?.focus(); lookBox.value?.scrollIntoView({ block: 'center', behavior: 'smooth' }) }
 function addHero() {
-  props.p.cast!.push({ gender: 'female', age: 30, ru: '', outfit_ru: '', en: '', outfit_en: '', ru_dirty: true })
+  props.p.cast!.push({ kind: 'person', gender: 'female', age: 30, ru: '', outfit_ru: '', en: '', outfit_en: '', ru_dirty: true })
   scheduleSave(); flushSave()
   cur.value = props.p.cast!.length - 1
   banner(t('board.look.added', { n: props.p.cast!.length }), 'info')
@@ -72,8 +96,14 @@ async function run(path: string, body?: unknown) {
 }
 const redraw = (n = 4) => run('redraw', { n })
 const describe = () => run('describe')
-const GROUPS = [{ id: 'age', keys: ['younger', 'older'] }, { id: 'hair', keys: ['shorter', 'longer', 'lighter', 'curly'] },
-  { id: 'face', keys: ['smile', 'makeup', 'softer'] }, { id: 'light', keys: ['warm', 'studio'] }]
+const LIGHT = { id: 'light', keys: ['warm', 'studio'] }
+const GROUPS_BY: Record<string, { id: string; keys: string[] }[]> = {
+  person: [{ id: 'age', keys: ['younger', 'older'] }, { id: 'hair', keys: ['shorter', 'longer', 'lighter', 'curly'] }, { id: 'face', keys: ['smile', 'makeup', 'softer'] }, LIGHT],
+  animal: [{ id: 'size', keys: ['bigger', 'smaller'] }, { id: 'coat', keys: ['fluffier', 'coat'] }, LIGHT],
+  creature: [{ id: 'size', keys: ['bigger', 'smaller'] }, { id: 'coat', keys: ['fluffier', 'coat'] }, LIGHT],
+  robot: [{ id: 'state', keys: ['newer', 'worn'] }, { id: 'glow', keys: ['glow'] }, LIGHT],
+}
+const GROUPS = computed(() => GROUPS_BY[kind.value] || GROUPS_BY.person)
 const picked = ref<string[]>([])
 const own = ref('')
 const fixErr = ref('')
@@ -150,12 +180,18 @@ const pct = (x: number) => `${Math.round(x * 100)}%`
 
         <div class="cc-info">
           <div class="cc-name"><h2>{{ nameOf(c, cur) }}</h2>
-            <select class="cc-inl" :aria-label="t('board.look.gender')" :value="c.gender" @change="setCast('gender', val($event))"><option v-for="[k, v] in GENDERS" :key="k" :value="k">{{ v }}</option></select>
-            <label class="cc-inl cc-age"><input type="number" min="21" max="99" :aria-label="t('board.look.ageLbl')" :value="c.age || 30" @change="setCast('age', val($event))">{{ t('board.cast.age', c.age || 30).replace(/^\d+\s*/, '') }}</label>
+            <HeroKind compact :model-value="kind" @update:model-value="setCast('kind', $event)" />
+            <select v-if="showGender" class="cc-inl" :aria-label="t('board.look.gender')" :value="c.gender" @change="setCast('gender', val($event))"><option v-for="[k, v] in GENDERS" :key="k" :value="k">{{ v }}</option></select>
+            <label v-if="isPerson" class="cc-inl cc-age"><input type="number" min="21" max="99" :aria-label="t('board.look.ageLbl')" :value="c.age || 30" @change="setCast('age', val($event))">{{ t('board.cast.age', c.age || 30).replace(/^\d+\s*/, '') }}</label>
             <span class="grow" />
             <button v-if="several && cast.length > 1" type="button" class="ghost" :title="t('board.look.removeHeroTitle')" @click="delHero"><Icon name="trash" />{{ t('board.look.remove') }}</button></div>
-          <label class="cc-field"><span>{{ t('board.cast.look') }}</span><textarea ref="lookBox" rows="3" :placeholder="t('board.cast.lookPh')" :value="c.ru || ''" @change="setCast('ru', val($event))" /></label>
-          <label class="cc-field"><span>{{ t('board.cast.outfit') }}</span><textarea rows="2" :placeholder="t('board.cast.outfitPh')" :value="c.outfit_ru || ''" @change="setCast('outfit_ru', val($event))" /></label>
+          <label class="cc-field"><span>{{ t(`board.cast.lookBy.${kind}`) }}</span><textarea ref="lookBox" rows="3" :placeholder="t(`board.cast.lookPhBy.${kind}`)" :value="c.ru || ''" @change="setCast('ru', val($event))" /></label>
+          <label v-if="isPerson || c.outfit_ru || showOutfit" class="cc-field"><span>{{ t('board.cast.outfit') }}</span><textarea rows="2" :placeholder="t('board.cast.outfitPh')" :value="c.outfit_ru || ''" @change="setCast('outfit_ru', val($event))" /></label>
+          <button v-if="!isPerson && !c.outfit_ru && !showOutfit" type="button" class="ghost cc-all" @click="showOutfit = true"><Icon name="plus" :size="14" />{{ t('board.cast.addOutfit') }}</button>
+          <details class="cc-own"><summary>{{ t('board.cast.own') }}<small>{{ t('board.cast.ownSub') }}</small></summary>
+            <textarea v-model="ownText" class="field-in" rows="3" maxlength="1200" :placeholder="t(`board.cast.ownPhBy.${kind}`)" :aria-label="t('board.cast.own')" @input="ownErr = ''" />
+            <p v-if="ownErr" class="cc-err" role="alert">{{ ownErr }}</p>
+            <div class="cc-own-go"><button type="button" class="btn" :disabled="busy" @click="ownGo"><Icon name="spark" />{{ t('board.cast.ownGo') }}</button><small>{{ t('board.cast.ownNote') }}</small></div></details>
           <div v-if="stale" class="cc-stale"><Icon name="warn" :size="16" /><span>{{ t('board.cast.stale') }}</span>
             <button type="button" class="btn" :disabled="busy" @click="redraw()"><Icon name="spark" />{{ t('board.cast.staleGo') }}</button></div>
           <button type="button" class="ghost cc-all" @click="emit('edit')"><Icon name="pen" :size="14" />{{ t('board.cast.allFields') }}</button>
@@ -180,7 +216,7 @@ const pct = (x: number) => `${Math.round(x * 100)}%`
             <p v-else class="sub">{{ t('board.cast.fixNeedsPhoto') }}</p>
           </div>
           <div class="cc-way">
-            <b><Icon name="users" />{{ t('board.cast.person') }}</b><span class="sub">{{ t('board.cast.personSub') }}</span>
+            <b><Icon name="users" />{{ t(`board.cast.otherBy.${kind}`) }}</b><span class="sub">{{ t('board.cast.personSub') }}</span>
             <div class="cc-row"><Icon name="shuffle" /><span>{{ t('board.cast.newFaces') }}</span>
               <button type="button" class="btn" :disabled="busy || !(c.ru || c.en)" @click="redraw()"><Icon name="spark" />{{ t('board.cast.newFacesGo') }}</button></div>
             <div class="cc-row"><Icon name="pen" /><span>{{ t('board.cast.rewrite') }}<small>{{ t('board.cast.rewriteSub') }}</small></span>

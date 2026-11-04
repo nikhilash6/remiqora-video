@@ -12,8 +12,8 @@ export default scenario('idea', 'A video from an idea',
       'The «Idea» field: who, where, what happens and how it ends. «A girl in a red coat walks along a night embankment in the rain, stops by a street lamp and smiles» is better than «a girl takes an evening walk»: place, light, weather, clothes and an ending give coherent scenes.'),
     step('Set the length, frame and model',
       '«Length» goes from 15 s to 10 min, and next to it you see right away how many scenes it makes: 5 s each on H3 and WAN, 10 s each on LTX. «Frame» is 16:9, 9:16 or 1:1. «Model» is who shoots: H3 and LTX with sound and lines, WAN without sound. You can change the model later.'),
-    step('Choose the mood and the hero',
-      '<p>«Mood»: Cinema, Clip, Commercial, Fantasy and effects, Documentary — the light, color, pace and camera of the whole video. «Who\'s in frame»: «One hero», «Several» or «No people». «Music and sound» is what the model composes by itself; empty means only the scene sounds.</p>'
+    step('Choose the delivery, the look and the hero',
+      '<p>«Delivery» is how the story is told (Cinema, Music video, Ad, Fairy tale, Trailer…), «Look» is how the picture looks (Live cinema, Anime, Golden hour…); «Writer decides» picks them by the idea. «Who\'s in frame»: «One hero», «Several» or «No people». «Music and sound» is what the model composes by itself; empty means only the scene sounds.</p>'
       + '<p>«Photo» is optional: «First frame» makes the video start from this picture, «Look only» has the writer describe the hero from it.</p>'),
     step('Click «Write the scenes»',
       'The writer writes the storyboard; it opens right away and fills in when the writer is done. While it writes, the status bar shows a green dot.',

@@ -3,7 +3,7 @@ export default {
   ru: {
     asShot: 'как снято',
     shot: {
-      cached: 'из кэша', step: 'шаг {step}/{steps}', loading: 'загрузка модели', preparing: 'готовится',
+      cached: 'уже снята', step: 'шаг {step}/{steps}', loading: 'загружаю модели', preparing: 'готовится',
       waitsFrame: 'ждёт кадр {i}-й', queued: 'в очереди', skipped: 'отложена', done: 'готово', none: 'не снята',
     },
     title: 'Ролик', firstShooting: 'Первая сцена снимается…', notShot: 'Ролик ещё не снят',
@@ -28,7 +28,7 @@ export default {
   en: {
     asShot: 'as shot',
     shot: {
-      cached: 'from the cache', step: 'step {step}/{steps}', loading: 'loading the model', preparing: 'getting ready',
+      cached: 'already shot', step: 'step {step}/{steps}', loading: 'loading the models', preparing: 'getting ready',
       waitsFrame: "waits for scene {i}'s frame", queued: 'queued', skipped: 'put off', done: 'ready', none: 'not shot',
     },
     title: 'Video', firstShooting: 'Shooting the first scene…', notShot: 'The video is not shot yet',

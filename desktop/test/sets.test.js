@@ -11,7 +11,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'in
 test('the manifest has only official repositories', () => {
   for (const [id, s] of Object.entries(manifest.sets)) {
     for (const f of s.files) {
-      assert.doesNotMatch(`${f.repo}/${f.path}`.toLowerCase(), /uncensored|eros|abliterated|heretic|nsfw/, `${id}: ${f.repo}/${f.path}`);
+      assert.doesNotMatch(`${f.repo}/${f.path}`.toLowerCase(), /uncensored|eros|abliterated|heret|nsfw/, `${id}: ${f.repo}/${f.path}`);
       assert.ok(f.bytes > 0, `${id}: ${f.path} has no size`);
     }
   }
@@ -23,8 +23,16 @@ test('a set brings what it needs, in the manifest order', () => {
 });
 
 test('a profile is recognized whatever the order', () => {
-  assert.strictEqual(profileOf(manifest, ['writer', 'h3']), 'minimum');
+  assert.strictEqual(profileOf(manifest, ['ltx23', 'writer']), 'minimum');
+  assert.strictEqual(profileOf(manifest, ['writer', 'h3']), 'h3');
   assert.strictEqual(profileOf(manifest, ['h3']), '');
+});
+
+test('the minimum profile needs neither H3 nor a Hugging Face token', () => {
+  const sets = withNeeds(manifest, manifest.profiles.minimum);
+  assert.ok(!sets.includes('h3') && !sets.includes('ref2va'));
+  assert.ok(sets.every((id) => !manifest.sets[id].gated));
+  assert.ok(manifest.profiles.faces.includes('h3'));
 });
 
 test('a file counts only with the official size, in its kind folder or under llm', () => {

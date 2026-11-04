@@ -60,7 +60,7 @@ export default {
       song: 'Песня', parsing: 'Разбираю песню…', drop: 'Перетащите песню или нажмите.',
       dropSub: 'mp3, wav, m4a, flac, ogg. Темп, такты и части песни найдутся за секунду.',
       another: 'Другая', wholeSong: 'Вся песня', loadSong: 'Загрузите песню',
-      clickWave: 'Щёлкните по волне — клип начнётся с этого такта.', clickTitle: 'Щёлкните — клип начнётся с этого такта',
+      clickWave: 'Щёлкните по волне — клип начнётся с этого такта.', edgeTitle: 'Потяните край — отрезок станет короче или длиннее (по тактам)', clickTitle: 'Щёлкните — клип начнётся с этого такта',
       words: 'Слова', lines: '{n} строка | {n} строки | {n} строк', linesIn: '{lines}, в отрезке {n}', notRecognised: 'ещё не распознаны',
       recogniseHint: 'Слова распознаются сами перед сценаристом (около 40 с), или сейчас — чтобы поправить их заранее.',
       recognising: 'Распознаю слова…', recognise: 'Распознать слова', songWords: 'Слова песни',
@@ -79,7 +79,7 @@ export default {
     part: { intro: 'вступление', groove: 'куплет', break: 'брейк', drop: 'дроп', outro: 'концовка', chorus: 'припев' },
     pick: {
       label: 'Модель видео', sound: 'свой звук', noSound: 'без звука', lines: 'реплики', faces: 'лица по фото', track: 'под трек',
-      upTo: 'до {s} с', noWeights: 'нет весов', download: 'Скачать недостающие веса — «Модели и настройки»',
+      upTo: 'до {s} с', noWeights: 'нет весов', install: 'Установить', none: 'Нет ни одной видеомодели. Установите хотя бы одну, чтобы снимать:', download: 'Скачать недостающие веса — «Модели и настройки»',
     },
     voice: {
       noMic: 'Нет доступа к микрофону: разрешите его браузеру', file: 'Мой голос',
@@ -146,7 +146,7 @@ export default {
       song: 'Song', parsing: 'Analyzing the song…', drop: 'Drop a song or click.',
       dropSub: "mp3, wav, m4a, flac, ogg. The tempo, bars and the song's parts are found in a second.",
       another: 'Another', wholeSong: 'Whole song', loadSong: 'Upload a song',
-      clickWave: 'Click the wave — the clip starts at that bar.', clickTitle: 'Click — the clip starts at that bar',
+      clickWave: 'Click the wave — the clip starts at that bar.', edgeTitle: 'Drag the edge — the piece gets shorter or longer (on the bars)', clickTitle: 'Click — the clip starts at that bar',
       words: 'Words', lines: '{n} line | {n} lines', linesIn: '{lines}, {n} in the stretch', notRecognised: 'not recognized yet',
       recogniseHint: 'The words are recognized by themselves before the writer (about 40 s), or now — to fix them in advance.',
       recognising: 'Recognizing the words…', recognise: 'Recognize the words', songWords: "The song's words",
@@ -165,7 +165,7 @@ export default {
     part: { intro: 'intro', groove: 'verse', break: 'break', drop: 'drop', outro: 'outro', chorus: 'chorus' },
     pick: {
       label: 'Video model', sound: 'own sound', noSound: 'no sound', lines: 'lines', faces: 'faces from photos', track: 'to a track',
-      upTo: 'up to {s} s', noWeights: 'no weights', download: 'Download the missing weights — «Models and settings»',
+      upTo: 'up to {s} s', noWeights: 'no weights', install: 'Install', none: 'No video model is installed. Install at least one to shoot:', download: 'Download the missing weights — «Models and settings»',
     },
     voice: {
       noMic: 'No access to the microphone: allow it in the browser', file: 'My voice',

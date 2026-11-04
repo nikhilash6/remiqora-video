@@ -22,13 +22,15 @@ from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 
 from . import config, settings  # settings first: data/settings.json goes on top of .env before anything reads config
-from . import clip_api, downloads, edit, graph, graph_api, i18n, jobs, lora_prefs, models_page, music, picture, post, projects, render, sysinfo, timings, v2v, videomodels
+from . import autopilot, clip_api, story, console, looks, downloads, edit, graph, graph_api, h3_licence, i18n, jobs, lora_prefs, models_page, music, picture, post, projects, render, sysinfo, timings, v2v, videomodels
 from .engine import graphs
 from .engine.comfy import COMFY, EngineError
+from .cloud import api as cloud_api, manager as cloud_manager
 from .llm import client as llm, describe, translate, writer
 from .planner import check, grid, model_prompts, prompts
 from . import loras as lora_lib
 from .loras import LoraInfo
+from .story import NewProject
 
 # the page: the Vue app in frontend/, built by `npm run build` (dev.bat does it) into frontend/dist
 WEB = Path(__file__).parent.parent / "frontend" / "dist"
@@ -36,11 +38,22 @@ MAX_PROMPT = 8000
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 
 
+console.quiet_log()   # at import: uvicorn has set its logging up by now, and its start chatter is still to come
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    cloud_manager.install()   # the mode from data/cloud.json: this machine, the rented server or the user's own
+    console.setup()           # the console window: the splash, its title, one line per event instead of the polls
+    await asyncio.to_thread(console.splash, cloud_manager.app_version(), VERSION.split(" ")[0])
     task = asyncio.create_task(jobs.worker())
+    watch = asyncio.create_task(cloud_manager.watch())   # an idle rented server is stopped
+    told = asyncio.create_task(console.watch())
     yield
     task.cancel()
+    watch.cancel()
+    told.cancel()
+    console.bye()
     await llm.SERVER.stop()
     await COMFY.stop()
 
@@ -51,6 +64,8 @@ app = FastAPI(title="Remiqora Video", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.include_router(graph_api.router)   # phase 9: graph projects
 app.include_router(clip_api.router)    # phase 11: a clip from a song
+app.include_router(autopilot.router)   # «Песня → клип»: the clip's stages in one job
+app.include_router(cloud_api.router)   # where the models run: here, a rented server, the user's own
 
 
 @app.middleware("http")
@@ -161,7 +176,10 @@ def get_config():
         qualities.append({"id": q, "mp": mp, "w": w, "h": h,
                           "per_scene": round(jobs.estimate({"quality": q, "width": w, "height": h, "length": 124}))})
     return {"aspects": [{"id": k, "ratio": v} for k, v in graphs.ASPECTS.items()], "qualities": qualities,
-            "video_models": videomodels.public(),   # phase 10: H3, LTX 2.5, LTX 2.3, WAN 2.2 5B
+            "video_models": videomodels.public(),   # phase 10: H3, LTX 2.5, LTX 2.3, WAN 2.2 5B (installed first)
+            "default_video_model": videomodels.default(),   # the first installed one: what a new project shoots with
+            "clip_video_model": videomodels.clip_default(),   # ... a new clip from a song: one that shoots to the track first
+            "no_video_model": not videomodels.installed(),   # not one is installed: the page says so and links to «Модели»
             "problems": COMFY.problems(), "max_prompt": MAX_PROMPT, "fps": graphs.FPS,
             "lora_dirs": [str(d) for d in config.LORA_DIRS], "output_dir": str(config.OUTPUT_DIR), "version": VERSION}
 
@@ -171,9 +189,15 @@ def system_state():
     """RAM and video memory for the header; `engine_ram` is what our ComfyUI process holds (None when it is off)."""
     engine = getattr(COMFY, "stats_pid", COMFY.pid)   # the worker reports its real process (a venv python is a launcher)
     pids = {"engine": engine, "llm": llm.SERVER.pid, "backend": os.getpid()}
+    cloud = cloud_manager.state.load()
+    if cloud["mode"] != "local":   # the models run elsewhere: this machine's memory says nothing; the rented card's does
+        return {"ram": None, "vram": cloud_manager.vram(cloud.get("pod")) if cloud["mode"] == "cloud" else None, "engine_ram": None,
+                "engine": COMFY.state(), "busy": jobs.busy(), "where": cloud["mode"],
+                "engine_model": videomodels.card(getattr(COMFY, "model", "h3")).short if COMFY.warm else None,
+                "llm": llm.SERVER.model.name if llm.SERVER.pid and llm.SERVER.model else None, "procs": {}, "vram_by": []}
     card = sysinfo.vram()
     return {"ram": sysinfo.ram(), "vram": card, "engine_ram": sysinfo.process_ram(engine),
-            "engine": COMFY.state(), "busy": jobs.busy(),
+            "engine": COMFY.state(), "busy": jobs.busy(), "where": "local",
             "engine_model": videomodels.card(getattr(COMFY, "model", "h3")).short if COMFY.warm else None,   # whose weights sit in memory
             "llm": llm.SERVER.model.name if llm.SERVER.pid and llm.SERVER.model else None,
             "procs": {k: sysinfo.process_ram(pid) for k, pid in pids.items()},   # RAM, GB
@@ -253,6 +277,50 @@ async def upload_frame(file: UploadFile):
     return {"name": name, "url": f"/frames/{name}"}
 
 
+VIDEO_EXT = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
+# the containers a dropped video may be, as ffprobe names them -> the demuxer ffmpeg is held to: a playlist (HLS) or a
+# concat list renamed .mp4 would make ffmpeg open other files or addresses (the page is reachable from a phone)
+VIDEO_DEMUX = {"mov,mp4,m4a,3gp,3g2,mj2": "mov", "matroska,webm": "matroska"}
+
+
+def video_frame(src: Path, dest: Path) -> bool:
+    """The frame at one second of a video (the first, if shorter) into `dest`: only a local file of a known container,
+    probed first, read by its own demuxer with nothing but the file protocol. -> done."""
+    r = subprocess.run([config.FFPROBE, "-v", "error", "-protocol_whitelist", "file", "-show_entries", "format=format_name",
+                        "-of", "default=nw=1:nk=1", str(src)], capture_output=True, text=True, creationflags=render.NO_WINDOW)
+    demux = VIDEO_DEMUX.get(r.stdout.strip()) if r.returncode == 0 else None
+    if not demux:
+        return False
+    for at in ("1", "0"):
+        try:
+            render._ffmpeg(["-protocol_whitelist", "file", "-f", demux, "-ss", at, "-i", str(src), "-frames:v", "1", str(dest)])
+        except EngineError:
+            continue
+        if dest.exists():
+            return True
+    return False
+
+
+@app.post("/api/frames/video")
+async def upload_video_frame(file: UploadFile):
+    """A video dropped on the home's «Что снимаем?»: its frame at one second (the first, if shorter) becomes the photo
+    - the hero, or the first frame of a story; the video itself is not kept."""
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in VIDEO_EXT:
+        raise HTTPException(400, i18n.L("Нужно видео: mp4, mov, webm или mkv", "A video is needed: mp4, mov, webm or mkv"))
+    name = f"h3s_{uuid.uuid4().hex[:12]}.png"
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / f"video{ext}"
+        with open(src, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+
+        def grab() -> None:
+            if not video_frame(src, config.COMFY_INPUT / name):
+                raise HTTPException(400, i18n.L("Не удалось взять кадр из видео: нужен mp4, mov, webm или mkv", "Could not take a frame from the video: an mp4, mov, webm or mkv is needed"))
+        await asyncio.to_thread(grab)
+    return {"name": name, "url": f"/frames/{name}", "from_video": Path(file.filename or "").name}
+
+
 @app.post("/api/frames/from-video/{name}")
 def frame_from_video(name: str):
     """The last frame of a finished scene as the start frame of the next one (a manual chain)."""
@@ -272,8 +340,11 @@ def llm_models():
         default = llm.find(None).id
     except llm.LLMError:
         default = None
-    return {"models": [m.public() for m in ms], "default": default, "dirs": [str(d) for d in config.LLM_DIRS],
-            "server_ok": config.LLAMA_SERVER_BIN.exists()}
+    out = {"models": [m.public() for m in ms], "default": default, "dirs": [str(d) for d in config.LLM_DIRS],
+           "server_ok": config.ENGINE == "remote" or config.LLAMA_SERVER_BIN.exists()}
+    if not ms and cloud_manager.DEPLOY["running"]:   # a cloud deploy is under way: the footer names the «writer» set's models as expected
+        out["deploying"] = [m["name"] for m in llm._manifest_llms(["writer"])]
+    return out
 
 
 class DescribeRequest(BaseModel):
@@ -301,7 +372,7 @@ class TranslateRequest(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_PROMPT)   # the lab's prompt in Russian
     seconds: float = Field(5, ge=1, le=15)                   # the lab's length: the timeline runs to it
     model: Optional[str] = None
-    video_model: str = "h3"                                  # the lab's model: the prompt takes its form
+    video_model: str = ""                                    # the lab's model: the prompt takes its form ("": the default one)
     frame: bool = False                                      # the shot starts from a picture
     target: str = Field("video", pattern="^(video|picture|frame)$")   # "picture": a graph's Krea node, a still; "frame": one drawn by reference (FLUX.2 Klein)
 
@@ -314,13 +385,14 @@ def llm_translate(req: TranslateRequest):
     except llm.LLMError as e:
         raise HTTPException(400, str(e)) from e
     return jobs.submit_task("translate", {"model": m.id, "model_name": m.name, "seconds": req.seconds},
-                            lambda job: translate.translate(req.text, req.seconds, m.id, video=req.video_model, frame=req.frame, target=req.target), estimate=30).public()
+                            lambda job: translate.translate(req.text, req.seconds, m.id, video=videomodels.pick(req.video_model), frame=req.frame, target=req.target), estimate=30).public()
 
 
 class TranslateLookRequest(BaseModel):
     ru: str = Field(min_length=1, max_length=2000)            # a graph Hero's look and outfit, in Russian
     gender: str = ""
     age: Optional[int] = None
+    kind: str = "person"                                      # person | animal | robot | creature (a graph Hero's kind)
     model: Optional[str] = None
 
 
@@ -332,14 +404,14 @@ def llm_translate_look(req: TranslateLookRequest):
     except llm.LLMError as e:
         raise HTTPException(400, str(e)) from e
     return jobs.submit_task("translate", {"model": m.id, "model_name": m.name, "what": "look"},
-                            lambda job: writer.translate_look(req.ru, req.gender, req.age, m.id), estimate=20).public()
+                            lambda job: writer.translate_look(req.ru, req.gender, req.age, m.id, req.kind), estimate=20).public()
 
 
 class TranslateFieldsRequest(BaseModel):
     fields: dict                                             # the lab's scene form, Russian: style, place, camera, beats, audio
     seconds: float = Field(5, ge=1, le=15)
     model: Optional[str] = None
-    video_model: str = "h3"
+    video_model: str = ""
 
 
 @app.post("/api/llm/translate-fields")
@@ -352,12 +424,12 @@ def llm_translate_fields(req: TranslateFieldsRequest):
     except llm.LLMError as e:
         raise HTTPException(400, str(e)) from e
     return jobs.submit_task("translate", {"model": m.id, "model_name": m.name, "seconds": req.seconds},
-                            lambda job: translate.translate_fields(req.fields, req.seconds, m.id, video=req.video_model), estimate=30).public()
+                            lambda job: translate.translate_fields(req.fields, req.seconds, m.id, video=videomodels.pick(req.video_model)), estimate=30).public()
 
 
 # ---------- projects: the idea, the storyboard, (phase 4) the shots ----------
 
-MOODS = {   # the idea screen's chips -> what the writer reads
+MOODS = {   # «Настроение» of older clients and projects (looks.MOOD_MAP maps them to a delivery); «Подача» and «Вид» now
     "Кино": "cinematic live-action film",
     "Клип": "music video: rhythmic, stylish, expressive motion",
     "Реклама": "polished commercial: clean, bright, aspirational",
@@ -378,55 +450,72 @@ def list_projects():
     return {"projects": projects.all_projects(), "moods": list(MOODS)}
 
 
-class NewProject(BaseModel):
-    idea: str = Field("", max_length=4000)
-    seconds: float = Field(30, ge=5, le=grid.MAX_SECONDS)
-    mode: str = "one"                # one | several | none: who is in the frame
-    aspect: str = "16:9"
-    mood: str = Field("", max_length=200)
-    music: str = Field("", max_length=300)
-    photo: Optional[str] = None      # a name from /api/frames: the hero's photo, described by the writer
-    photo_start: bool = False        # the photo is also the very first frame: scene 1 starts from it (i2v)
-    seed: int = -1
-    model: Optional[str] = None
-    manual: bool = False             # no writer: empty scenes, the user writes every prompt by hand
-    video_model: str = "h3"          # phase 10: which model shoots it (videomodels.CARDS)
-    loras: list[dict] = []           # the video's LoRA [{id, name, strength}], as «Съёмка» → LoRA keeps them
-    pic_loras: dict = {}             # «LoRA картинок»: {"krea": [...], "flux2": [...]} (picture.project_loras)
+# ---------- «Подача» and «Вид» (looks.py) ----------
+
+@app.get("/api/looks")
+def get_looks():
+    """The deliveries, the looks by group and «Мои виды», in the interface's language."""
+    return looks.public()
+
+
+@app.get("/api/looks/preview/{lid}")
+def look_preview(lid: str):
+    """A look's tile: the studio's own (data/looks/<id>.jpg) or the shipped one (app/looks_tiles); else 404 - the page draws its placeholder."""
+    p = looks.preview_path(lid)
+    if not p:
+        raise HTTPException(404)
+    return FileResponse(p, media_type="image/webp" if p.suffix == ".webp" else "image/jpeg")   # the OS mime table may not know webp
+
+
+class MyLook(BaseModel):
+    name: str = Field("", max_length=60)
+    base: str = Field("live_cinema", max_length=40)
+    own: str = Field("", max_length=600)
+
+
+@app.get("/api/looks/mine")
+def my_looks_list():
+    return {"mine": looks.my_looks()}
+
+
+@app.post("/api/looks/mine")
+def my_looks_add(body: MyLook):
+    """«Сохранить как свой вид»: a name, the look it is based on, the own words."""
+    try:
+        return looks.add_mine(body.name, body.base, body.own)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.put("/api/looks/mine/{lid}")
+def my_looks_edit(lid: str, body: MyLook):
+    try:
+        return looks.edit_mine(lid, body.name, body.base, body.own)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except KeyError as e:
+        raise HTTPException(404, i18n.L("Нет такого вида", "No such look")) from e
+
+
+@app.delete("/api/looks/mine/{lid}")
+def my_looks_remove(lid: str):
+    try:
+        looks.remove_mine(lid)
+    except KeyError as e:
+        raise HTTPException(404, i18n.L("Нет такого вида", "No such look")) from e
+    return {"ok": True}
 
 
 @app.post("/api/projects")
 def new_project(req: NewProject):
     """The idea screen's «Расписать сцены»: a project on disk + the writer's job (photo description and storyboard
     in one model load). The plan is saved into the project by the job itself."""
-    if req.mode not in grid.MODES:
-        raise HTTPException(400, i18n.L(f"Неизвестный режим: {req.mode}", f"Unknown mode: {req.mode}"))
-    if req.aspect not in graphs.ASPECTS:
-        raise HTTPException(400, i18n.L(f"Неизвестный формат кадра: {req.aspect}", f"Unknown frame format: {req.aspect}"))
-    if not videomodels.offered(req.video_model):
-        raise HTTPException(400, i18n.L(f"Неизвестная модель: {req.video_model}", f"Unknown model: {req.video_model}"))
+    story.check_form(req)
     if req.manual:
         return _manual_project(req)
-    if len(req.idea.strip()) < 3:
-        raise HTTPException(400, i18n.L("Напишите идею", "Write an idea"))
-    try:
-        model = llm.find(req.model)
-    except llm.LLMError as e:
-        raise HTTPException(400, str(e)) from e
-    photo = None
-    if req.photo:
-        photo = config.COMFY_INPUT / Path(req.photo).name
-        if not photo.exists():
-            raise HTTPException(400, i18n.L("Фото не найдено, загрузите его снова", "Photo not found, upload it again"))
-        if (req.mode != "none" or req.photo_start) and not model.mmproj:
-            raise HTTPException(400, i18n.L(f"Модель {model.name} не видит картинок: выберите другую или уберите фото", f"Model {model.name} can't see pictures: choose another one or remove the photo"))
-    settings = {**req.model_dump(exclude={"photo", "model"}), "model": model.id, "quality": "draft", "loras": picture.pick_loras(req.loras), "rtx": True,
-                "pic_loras": picture.pick_pic_loras(req.pic_loras)}
-    proj = projects.create(settings)
-    if photo:
-        settings["photo"] = projects.put_photo(proj["id"], photo)
-        projects.save(proj)
-    return {"project": proj["id"], "job": _writer_job(proj["id"], req, model, settings.get("photo"))}
+    model = story.check_new(req)
+    proj = story.create(req, model)
+    return {"project": proj["id"], "job": _writer_job(proj["id"], req, model, proj["settings"].get("photo"))}
 
 
 class WriteAgain(BaseModel):
@@ -445,7 +534,7 @@ def project_write(pid: str, req: WriteAgain):
         raise HTTPException(400, i18n.L("Нечего расписывать заново: начните с главной", "Nothing to write again: start from the home screen"))
     # the saved settings checked as a new project's are: a model gone since (removed, an import) is said, not shot as H3
     # with its 5 s grid
-    if not videomodels.offered(st.get("video_model") or "h3"):
+    if not videomodels.offered(videomodels.stored(st)):
         raise HTTPException(400, i18n.L(f"Неизвестная модель: {st.get('video_model')}", f"Unknown model: {st.get('video_model')}"))
     if (st.get("mode") or "one") not in grid.MODES or (st.get("aspect") or "16:9") not in graphs.ASPECTS:
         raise HTTPException(400, i18n.L("Нечего расписывать заново: начните с главной", "Nothing to write again: start from the home screen"))
@@ -466,38 +555,19 @@ _write_lock = threading.Lock()
 
 
 def _writer_job(pid: str, req: NewProject, model, photo: Optional[str]) -> dict:
-    """The writer's job of a new project: the storyboard written from the idea and saved into the project."""
-    mood = ", ".join(x for x in (MOODS.get(req.mood, req.mood),) if x)
-    plan = writer.new_plan(req.idea, req.seconds, req.mode, mood, req.music, None,
-                           seed=req.seed if req.seed >= 0 else random.randrange(100000), model=model.id,
-                           scene_seconds=videomodels.card(req.video_model).grid_seconds)   # LTX: scenes of 10 s
-    if photo and req.photo_start:
-        plan["scenes"][0]["start_photo"] = photo
-    plan["video"] = req.video_model   # the writer knows what shoots (writer.MODEL_NOTES)
-
-    async def run(job):
-        p = await writer.write(plan, projects.photo_path(projects.load(pid)) if req.mode != "none" else None, projects.folder(pid))
-        timings.record_writer(p.get("writer") or {}, len(p["scenes"]))
-        cur = projects.load(pid)
-        cur["plan"] = check.plan(p)
-        cur["name"] = p.get("title_ru") or cur.get("name")
-        projects.save(cur)
-        return {"project": pid}
-
-    n = len(plan["scenes"])
-    job = jobs.submit_task("write", {"project": pid, "idea": req.idea[:80], "scenes": n}, run,
-                           estimate=timings.writer_seconds(model.name, n, 8 + 3 * n) + (10 if photo else 0))
-    return job.public()
+    return story.writer_job(pid, req, model, photo)
 
 
 def _manual_project(req: NewProject) -> dict:
     """«Без сценариста»: the storyboard's grid with empty scenes, each one's prompt written by hand (prompts.is_raw)."""
+    req.video_model = videomodels.pick(req.video_model)
     settings = {**req.model_dump(exclude={"photo", "model", "manual"}), "model": None, "quality": "draft", "loras": picture.pick_loras(req.loras), "rtx": True,
                 "pic_loras": picture.pick_pic_loras(req.pic_loras)}
     proj = projects.create(settings)
     plan = writer.new_plan(req.idea or "", req.seconds, req.mode, seed=random.randrange(100000),
                            scene_seconds=videomodels.card(req.video_model).grid_seconds)
     plan["manual"] = True
+    looks.choose_request(plan, req.delivery, req.look, req.look_own, req.mood)
     for s in plan["scenes"]:
         s.update(raw="", locked=True, source="user")
     proj["plan"] = check.plan(plan)
@@ -506,12 +576,22 @@ def _manual_project(req: NewProject) -> dict:
     return {"project": proj["id"], "job": None}
 
 
+def _with_looks(proj: dict) -> dict:
+    """The project for the page, with «Подача» and «Вид» as they stand (an older plan's mood mapped, not saved): the
+    plan's, or a graph's own (settings)."""
+    plan = proj.get("plan")
+    st = proj.get("settings") or {}
+    src = dict(plan) if plan else {k: v for k, v in st.items() if k in looks.KEYS}
+    looks.migrate(src, st.get("mood", ""))
+    return {**proj, "looks": looks.state(src)}
+
+
 @app.get("/api/projects/{pid}")
 def get_project(pid: str):
     proj = _project(pid)
     if proj.get("plan") and edit.ensure_ids(proj["plan"]):   # a plan written before ids: they are given for good
         projects.save(proj)
-    return proj
+    return _with_looks(proj)
 
 
 @app.get("/api/projects/{pid}/photo")
@@ -558,7 +638,7 @@ def put_project(pid: str, body: ProjectEdit):
             keep["pic_loras"] = picture.pick_pic_loras(body.settings["pic_loras"])
         if keep.get("quality", "draft") not in graphs.QUALITY_MP or keep.get("aspect", "16:9") not in graphs.ASPECTS:
             raise HTTPException(400, i18n.L("Неизвестное качество или формат кадра", "Unknown quality or frame format"))
-        if not videomodels.offered(keep.get("video_model", "h3")):
+        if not videomodels.offered(keep.get("video_model") or videomodels.stored(proj["settings"])):
             raise HTTPException(400, i18n.L("Неизвестная модель", "Unknown model"))
         if "track_sync" in keep:
             keep["track_sync"] = bool(keep["track_sync"])
@@ -567,7 +647,7 @@ def put_project(pid: str, body: ProjectEdit):
                 proj["settings"].pop("size", None)
                 del keep["size"]
             else:
-                own = videomodels.own_size({"size": keep["size"]}, videomodels.card(keep.get("video_model", proj["settings"].get("video_model"))))
+                own = videomodels.own_size({"size": keep["size"]}, videomodels.card(keep.get("video_model") or proj["settings"].get("video_model")))
                 if not own:
                     raise HTTPException(400, i18n.L("Размер кадра: ширина и высота в пикселях", "Frame size: width and height in pixels"))
                 keep["size"] = {"w": own[0], "h": own[1]}
@@ -575,10 +655,16 @@ def put_project(pid: str, body: ProjectEdit):
             keep["output"] = post.output_of({"output": keep["output"]})
             keep["rtx"] = keep["output"]["size"] != "off"
         proj["settings"].update(keep)
+    if body.settings is not None and any(k in body.settings for k in ("delivery", "look", "look_own")):
+        _change_look(proj, body.settings)
     if body.name is not None:
         proj["name"] = body.name.strip() or proj.get("name")
     _stale(pid, body.rev)   # a job saved while the plan was checked (the window of check.plan): not over it
-    return projects.save(proj)
+    return _with_looks(projects.save(proj))
+
+
+def _change_look(proj: dict, st: dict) -> None:
+    story.change_look(proj, st)
 
 
 @app.delete("/api/projects/{pid}")
@@ -623,7 +709,7 @@ def project_rewrite(pid: str, req: RewriteRequest):
 
     async def run(job):
         cur = projects.load(pid)
-        cur["plan"]["video"] = cur["settings"].get("video_model") or "h3"   # the model may have changed since it was written
+        cur["plan"]["video"] = videomodels.stored(cur["settings"])   # the model may have changed since it was written
         if req.how == "looks":   # the edited Russian look of the characters (scenes = their indices) or the world
             p = await writer.rewrite_looks(cur["plan"], req.scenes or None, req.seed)
         elif req.how == "lines":   # «Придумать реплики»: what the people of these scenes say
@@ -679,7 +765,7 @@ def project_render(pid: str, req: RenderRequest):
         raise HTTPException(400, i18n.L("Раскадровка ещё не написана", "The storyboard is not written yet"))
     if issues := COMFY.problems():
         raise HTTPException(400, "; ".join(issues))
-    if any(j.status in ("queued", "running") and j.kind == "render" and j.params.get("project") == pid for j in jobs.JOBS.values()):
+    if any(j.status in ("queued", "running") and j.kind in ("render", "autopilot") and j.params.get("project") == pid for j in jobs.JOBS.values()):
         raise HTTPException(409, i18n.L("Этот ролик уже снимается", "This video is already being shot"))
     if req.quality:
         if req.quality not in graphs.QUALITY_MP:
@@ -1328,9 +1414,11 @@ def cast_describe(pid: str, i: int):
     if not m.mmproj:
         raise HTTPException(400, i18n.L(f"Модель {m.name} не видит картинок: выберите другую в шапке", f"Model {m.name} can't see pictures: choose another one in the header"))
 
+    kind = c.get("kind") or "person"
+
     async def run(job):
         async with llm.session(m.id) as client:
-            d = await describe.describe_with(client, path)
+            d = await describe.describe_with(client, path, kind=kind)
         cur = projects.load(pid)
         cc = _cast_member(cur, i)
         # the photo gives the face; the outfit stays the user's (a fashion shoot styles it), unless there is none yet
@@ -1723,7 +1811,7 @@ class SceneRequest(BaseModel):
     seed: int = -1                             # < 0: random
     count: int = Field(1, ge=1, le=8)
     loras: list[LoraUse] = []
-    video_model: str = "h3"                    # phase 10: which model shoots it (the prompt goes as written)
+    video_model: str = ""                      # phase 10: which model shoots it ("": the default one)
 
 
 @app.post("/api/scenes")
@@ -1751,6 +1839,7 @@ def make_scenes(req: SceneRequest):
         if info.verdict == "blocked":
             raise HTTPException(400, i18n.L(f"LoRA «{info.name}»: {info.note}", f"LoRA «{info.name}»: {info.note}"))
         loras.append({"id": u.id, "strength": u.strength, "name": info.name})
+    req.video_model = videomodels.pick(req.video_model)
     if not videomodels.offered(req.video_model):
         raise HTTPException(400, i18n.L(f"Неизвестная модель: {req.video_model}", f"Unknown model: {req.video_model}"))
     card = videomodels.card(req.video_model)
@@ -1865,6 +1954,7 @@ class DownloadRequest(BaseModel):
     repo: str
     path: str
     slot: Optional[str] = None       # a weight role (models_page.SLOTS) - its folder; or
+    accept_h3: bool = False          # the MiniMax H3 licence statement, ticked on the Models page
     to: Optional[str] = None         # "llm": the writer's last GGUF folder
 
 
@@ -1884,6 +1974,8 @@ def _download_folder(req: DownloadRequest) -> Path:
 @app.post("/api/models/download")
 def models_download(req: DownloadRequest):
     """«Скачать» / «Продолжить»: one file at a time, in the background; the page polls /api/models."""
+    if h3_licence.is_h3_repo(req.repo) and not req.accept_h3:
+        raise HTTPException(400, h3_licence.refusal())
     try:
         downloads.start(req.repo, req.path, _download_folder(req))
     except downloads.DownloadError as e:
@@ -1902,7 +1994,7 @@ def models_download_url(req: UrlRequest):
         repo, path = downloads.parse_url(req.url)
     except downloads.DownloadError as e:
         raise HTTPException(400, str(e)) from e
-    return models_download(DownloadRequest(repo=repo, path=path, to="llm"))
+    return models_download(DownloadRequest(repo=repo, path=path, to="llm", accept_h3=False))
 
 
 @app.post("/api/models/download/cancel")

@@ -34,6 +34,14 @@ COMFY_DIR = Path(os.environ.get("COMFY_DIR", str(OWN_ENGINE if (OWN_ENGINE / "Co
 COMFY_PYTHON = Path(os.environ.get("COMFY_PYTHON", str(engine_python(COMFY_DIR))))
 COMFY_INPUT = Path(os.environ.get("COMFY_INPUT", str(ROOT / "data" / "comfy" / "input")))
 COMFY_OUTPUT = Path(os.environ.get("COMFY_OUTPUT", str(ROOT / "data" / "comfy" / "output")))
+# ENGINE=remote: the worker runs on another machine (cloud/worker_server.py on a RunPod pod); the studio sends it the
+# graphs and their input files and takes the results back. Everything else (writer, montage, RTX, RIFE) stays here.
+ENGINE = os.environ.get("ENGINE", "local")
+REMOTE_URL = os.environ.get("REMOTE_URL", "").rstrip("/")   # https://<pod>-8188.proxy.runpod.net
+REMOTE_TOKEN = os.environ.get("REMOTE_TOKEN", "")
+# a server without an https proxy (Vast.ai) serves its own self-signed certificate: this PEM, and only it, is trusted
+# (app/cloud/tls.py makes it, app/engine/remote.py pins it); empty = the usual CA check (RunPod's proxy, «Свой сервер»)
+REMOTE_CERT = os.environ.get("REMOTE_CERT", "")
 
 # Phase 7: every model shoots in our own worker (h3worker.py: ComfyUI's core as a library, no server). It finds the
 # weights in these roots' diffusion_models / text_encoders / vae / loras (unet / clip too); H3_REF_DIR and LORA_DIRS

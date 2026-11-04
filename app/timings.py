@@ -4,6 +4,9 @@ A record: quality, the frame's pixels, the frame count, the number of LoRA, the 
 start / load the model first (a cold shot also pays the model load, ~10-40 s). An estimate takes the median seconds
 per megapixel-frame of the last warm shots of that quality and scales it to the asked size; the cold overhead is the
 median difference between cold and warm shots. Until there are records, the 2026-10-21 measurements stand in.
+
+Records belong to the card that made them ("e": "local", or the rented card's name - a RTX PRO 6000 does a warm scene
+in 20 s, a 4090 in 100-115 s), and an estimate uses only its own card's records. Records from before the key are local.
 """
 from __future__ import annotations
 
@@ -15,11 +18,31 @@ import time
 from . import config
 
 FILE = config.DATA_DIR / "timings.json"
-KEEP = 60
+KEEP = 120   # all cards together
 # seconds per 5 s scene (124 frames), int8, warm, RTX 4080 - measured 2026-10-21
 BASE = {"draft": (960 * 544, 95.0), "final": (1344 * 768, 271.0)}
 COLD = 25.0
+COLD_REMOTE = 120.0   # a rented card, none measured yet: the weights come from the network volume (206 s vs 20 s warm on a PRO 6000)
 _lock = threading.Lock()
+
+
+def engine_key() -> str:
+    """The card the next scene runs on: "local", or the cloud server's GPU name (a server of one's own: "server")."""
+    if config.ENGINE != "remote":
+        return "local"
+    try:
+        from .cloud import state
+        d = state.load()
+        if d["mode"] == "cloud":
+            return (d.get("pod") or {}).get("gpu_name") or "cloud"
+    except Exception:
+        pass
+    return "server"
+
+
+def _mine(quality: str) -> list[dict]:
+    e = engine_key()
+    return [r for r in _load() if r["q"] == quality and r.get("e", "local") == e]
 
 
 def _load() -> list[dict]:
@@ -33,7 +56,7 @@ def record(quality: str, width: int, height: int, length: int, loras: int, secon
     with _lock:
         rows = _load()
         rows.append({"q": quality, "px": width * height, "frames": length, "loras": loras, "s": round(seconds, 1),
-                     "cold": cold, "t": int(time.time())})
+                     "cold": cold, "e": engine_key(), "t": int(time.time())})
         FILE.write_text(json.dumps(rows[-KEEP:], indent=0), encoding="utf-8")
 
 
@@ -45,7 +68,7 @@ def _rate(rows: list[dict]) -> float:
 def scene_seconds(quality: str, width: int, height: int, length: int = 124, base: float | None = None) -> float:
     """`quality` is a timings key (videomodels.timing_key: H3's draft / final / draft_ref, another model's
     "ltx25:draft"); `base` - that model's guess for this size until it is measured here."""
-    rows = [r for r in _load() if r["q"] == quality]
+    rows = _mine(quality)
     warm = [r for r in rows if not r["cold"]][-12:]
     if warm:
         return _rate(warm) * width * height * length
@@ -58,16 +81,16 @@ def scene_seconds(quality: str, width: int, height: int, length: int = 124, base
 
 
 def cold_seconds(quality: str) -> float:
-    rows = [r for r in _load() if r["q"] == quality]
+    rows = _mine(quality)
     cold, warm = [r for r in rows if r["cold"]][-6:], [r for r in rows if not r["cold"]][-12:]
     if cold and warm:
         return max(0.0, statistics.median(r["s"] / (r["px"] * r["frames"]) for r in cold) * statistics.median(r["px"] * r["frames"] for r in cold)
                    - _rate(warm) * statistics.median(r["px"] * r["frames"] for r in cold))
-    return COLD
+    return COLD if engine_key() == "local" else COLD_REMOTE
 
 
 def samples(quality: str) -> int:
-    return sum(1 for r in _load() if r["q"] == quality and not r["cold"])
+    return sum(1 for r in _mine(quality) if not r["cold"])
 
 
 # The writer's new storyboard: seconds a scene, the model's start among them, from this machine's last ones. A fixed

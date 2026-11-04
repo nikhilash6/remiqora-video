@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from .. import looks
 from ..i18n import LANGS, L, plan_lang_name, text_name
 from .grid import SCENE_SECONDS
 
@@ -45,13 +46,21 @@ CAMERAS = {
 }
 CYRILLIC_LANGS = ("Russian", "Ukrainian", "Belarusian", "Kazakh")   # the languages written in Cyrillic
 TAIL_PEOPLE = "Keep {who} face, hair and outfit exactly the same. No text, subtitles, logos or watermarks."
+TAIL_NONPERSON = "Keep its {keep} exactly the same. No text, subtitles, logos or watermarks."
 TAIL_NONE = "No text, subtitles, logos, watermarks or people."
 TAIL_EMPTY = "There are no people and no faces anywhere in this shot. No text, subtitles, logos or watermarks."
+# the hero not in the scene, yet someone else is (no_cast: a memory's woman, a passer-by): nothing of the hero's to keep
+TAIL_PLAIN = "No text, subtitles, logos or watermarks."
 FRAME_HOLD = "Everything stays as in <Picture 1>: the same people, place, light, colours and framing."
 # from a picture the camera only eases in or across: a tracking or orbiting move makes H3 invent what the picture lacks
 HOLD_CAMERAS = ("static", "push_in", "pull_back", "pan", "handheld")
 MIN_AGE = 21
 PROMPT_V = 3   # the formula of new plans (formula())
+
+
+def _v5(plan: dict) -> bool:
+    """rules_v 5 (writer.RULES_V): the cleaner grain stripping and the non-person cast check."""
+    return int(plan.get("rules_v") or 0) >= 5
 
 
 def formula(plan: dict) -> int:
@@ -369,6 +378,8 @@ def photo_people(plan: dict, scene: dict) -> list[int]:
     cast = plan.get("cast") or []
     if scene.get("faces") is not None:
         return [n - 1 for n in scene["faces"] if isinstance(n, int) and 1 <= n <= len(cast) and has_photo(cast[n - 1])]
+    if no_cast(plan, scene):
+        return []   # no hero's photo for Ref2VA, a drawn frame or the face check: the hero isn't in it
     if len(cast) == 1:
         return [0] if has_photo(cast[0]) else []
     return [i for i, c in scene_cast(plan, scene) if has_photo(c)]
@@ -380,12 +391,38 @@ _NAME = re.compile(r"\b[A-ZА-ЯЁ][a-zа-яё]{2,}\b")
 _SMALL = re.compile(r"\b[a-zа-яё]+\b")   # the words written small (no re.I)
 
 
+# rules_v 4: a cast entry is a person (no `kind` = a person: older plans), an animal, a robot or a creature (a fantasy /
+# cartoon being, a toy); what a picture must keep the same for each
+KIND_KEEP = {"animal": "fur, markings and face", "robot": "shape, materials and lights", "creature": "body, skin and markings"}
+
+
+def kind_of(c: Optional[dict]) -> str:
+    k = (c or {}).get("kind")
+    return k if k in KIND_KEEP else "person"
+
+
+def is_nonperson(c: Optional[dict]) -> bool:
+    """A cast entry that is not a person (rules_v 4: `kind` animal / robot / creature)."""
+    return kind_of(c) != "person"
+
+
+def faces_apply(plan: dict, i: Optional[int] = None) -> bool:
+    """Whether a face detector can judge the cast: false for a hero that is an animal, a robot or a creature (character i), or
+    when the cast has no person at all. An older plan (no `kind`) and an empty cast: as before, true."""
+    cast = plan.get("cast") or []
+    if i is not None:
+        return not (0 <= i < len(cast) and is_nonperson(cast[i]))
+    return not cast or any(not is_nonperson(c) for c in cast)
+
+
 def has_people(scene: dict, plan: Optional[dict] = None) -> bool:
     """Whether the scene's actions name someone in the frame: a person, a pronoun, a hand, a role, or a hero by the name
     their look uses (a capitalised word of the actions found in a hero's look); a scene without actions is taken as
     having its people. A clip's insert of the empty coat on the chair names nobody: no portrait goes to it."""
     beats = " ".join(b for b in scene.get("beats_en") or [] if b)
     if not beats.strip() or PEOPLE.search(beats) or ROLES.search(beats):
+        return True
+    if any(is_nonperson(c) for c in (plan or {}).get("cast") or []):   # «the kitten» / «it» name no one by PEOPLE: the scene's `who` says who is absent
         return True
     looks = " ".join(f"{c.get('en') or ''} {c.get('ru') or ''}" for c in (plan or {}).get("cast") or [])
     # a name is never written small: «The» starting a sentence of the actions and of a look is no one's name
@@ -413,9 +450,12 @@ def lock_text(plan: dict, scene: Optional[dict] = None) -> str:
     if len(cast) == 1:
         c = cast[0]
         who = "The heroine" if c.get("gender") == "female" else "The hero" if c.get("gender") == "male" else "The main character"
-        return f"{who} (the same person in every shot): {_sentence(c['en'])}{_wearing(c)}"
+        out = f"{who} (the same {kind_of(c)} in every shot): {_sentence(c['en'])}{_wearing(c)}"
+        return looks.unphoto(out, _v5(plan)) if looks.stylised(plan) else out
     people = scene_cast(plan, scene)
     text = " ".join(f"Character {i + 1} (the same in every shot): {_sentence(c['en'])}{_wearing(c)}" for i, c in people)
+    if looks.stylised(plan):
+        text = looks.unphoto(text, _v5(plan))
     if len(people) < len(cast):
         names = " and ".join(f"Character {i + 1}" for i, _ in people)
         text += f" Only {names} {'is' if len(people) == 1 else 'are'} in this scene, nobody else."
@@ -426,6 +466,8 @@ def _whose(plan: dict, scene: Optional[dict] = None) -> str:
     people = scene_cast(plan, scene)
     if len(people) != 1:
         return "everyone's"
+    if is_nonperson(people[0][1]):
+        return "its"
     return {"female": "her", "male": "his"}.get(people[0][1].get("gender"), "their")
 
 
@@ -454,12 +496,32 @@ def starts_from_photo(scene: dict) -> bool:
     return scene.get("kind") == "new" and bool(scene.get("start_photo"))
 
 
+def no_cast(plan: dict, scene: dict) -> bool:
+    """A one-hero video's scene the hero is not in: its `who` is [] (a landscape, a detail, a memory without the hero;
+    a new scene's own, a continuation's own or else its opener's, as the inspector shows it), and nobody sings or
+    speaks in it. Its prompt carries nothing of the hero - no look, no face to keep, no «his lips stay closed»
+    (2026-11-01, a clip's inserts: H3 drew a man of the hero's look into the empty shots) - and the hero's face is
+    never checked in it. With several people [] stays «not said» (scene_cast: everyone): the writer's who filtered to
+    nothing is [] too."""
+    if plan.get("mode") != "one" or lines_of(plan, scene):
+        return False
+    own = scene.get("who")
+    if own:
+        return False
+    if scene.get("kind") != "continue":
+        return isinstance(own, list)
+    said = (opener_of(plan, scene) or {}).get("who")
+    return isinstance(said, list) and not said
+
+
 def nobody(plan: dict, scene: dict, steps: int = 0) -> bool:
     """A people video's scene with nobody in it: its actions name no one, nobody speaks, and the frame it starts from
     is empty too - a continuation's source names nobody, a start picture is a frame drawn empty (frames._draw_empty;
-    the user's photo may show anyone)."""
+    the user's photo may show anyone), or the scene says the hero isn't in it (no_cast)."""
     if plan["mode"] == "none" or lines_of(plan, scene) or has_people(scene, plan):
         return False
+    if no_cast(plan, scene):
+        return True
     if scene.get("kind") == "continue":
         src = from_of(plan, scene)
         return src is None or (steps <= len(plan["scenes"]) and nobody(plan, src, steps + 1))
@@ -471,7 +533,12 @@ def nobody(plan: dict, scene: dict, steps: int = 0) -> bool:
 def held(plan: dict, scene: dict) -> bool:
     """Formula 2: a new scene shot from its picture without Ref2VA - the picture is the place, the people, the light
     and the style, the prompt only what happens from it on."""
-    return formula(plan) >= 2 and starts_from_photo(scene) and not uses_refs(plan, scene)
+    if formula(plan) < 2 or uses_refs(plan, scene):
+        return False
+    # a look drawn by every frame (looks.needs_frame): a continuation too - its picture is the last frame, in the look;
+    # the style or the place said again turned a drawn look into a live photo (2026-11-03)
+    return starts_from_photo(scene) or (scene.get("kind") == "continue" and looks.needs_frame(plan))
+
 
 
 def hold_camera(scene: dict) -> str:
@@ -492,7 +559,8 @@ def compose(plan: dict, scene: dict) -> str:
     parts = []
     refs = uses_refs(plan, scene)
     hold = held(plan, scene)
-    empty = formula(plan) >= 2 and nobody(plan, scene)   # formula 2: no look, no face to keep where nobody is
+    bare = no_cast(plan, scene)   # the hero is not in it: none of the hero's words, whatever the formula
+    empty = (formula(plan) >= 2 or bare) and nobody(plan, scene)   # formula 2: no look, no face to keep where nobody is
     if (scene["kind"] == "continue" or starts_from_photo(scene)) and not refs:
         # i2v: the start frame is <Picture 1>. With Ref2VA the pictures are the faces and the start frame is anchored
         # in the latent (graphs.scene's guide), so it is not named
@@ -501,10 +569,16 @@ def compose(plan: dict, scene: dict) -> str:
         # the picture is the style, the people and the place: their words again made H3 cut to the described place
         # (2026-10-28, a café instead of the street of the picture)
         parts.append(FRAME_HOLD)
-        if (scene.get("frame") or {}).get("empty") and not empty and (lock := lock_text(plan, scene)):
+        if looks.stylised(plan) and not looks.needs_frame(plan) and (st := looks.unphoto(plan.get("style_en", ""), _v5(plan))):
+            parts.append(_sentence(st))   # a stylised look says its style in the frame scene too
+        if tech := looks.tech(plan):   # a look drawn by every frame: one phrase of the technique, nothing more
+            parts.append(tech)
+        if (scene.get("frame") or {}).get("empty") and not empty and not bare and (lock := lock_text(plan, scene)):
             parts.append(lock)   # a frame drawn empty that the scene's people come into: only the look shows them
+        elif not empty and not bare and any(is_nonperson(x) for _, x in scene_cast(plan, scene)) and (lock := lock_text(plan, scene)):
+            parts.append(lock)   # an animal, a robot, a creature has no face reference: its look stays in the words
     else:
-        parts.append(_sentence(plan.get("style_en", "")))
+        parts.append(_sentence(looks.unphoto(plan.get("style_en", ""), _v5(plan)) if looks.stylised(plan) else plan.get("style_en", "")))
         if refs:
             # Ref2VA (render.py gives the photos as <Picture 1>, <Picture 2>... in this order): name who each photo is,
             # in the words of the lock below
@@ -512,8 +586,11 @@ def compose(plan: dict, scene: dict) -> str:
             for k, i in enumerate(photo_people(plan, scene)):
                 who = (("The heroine" if cast[0].get("gender") == "female" else "The hero" if cast[0].get("gender") == "male" else "The main character")
                        if len(cast) == 1 else f"Character {i + 1}")
+                if is_nonperson(cast[i]):
+                    parts.append(f"{who} is the {kind_of(cast[i])} in <Picture {k + 1}>: exactly the same {KIND_KEEP[kind_of(cast[i])]} as in <Picture {k + 1}>.")
+                    continue
                 parts.append(f"{who} is the person in <Picture {k + 1}>: exactly the same face and hair as in <Picture {k + 1}>.")
-        if not empty and (lock := lock_text(plan, scene)):
+        if not empty and not bare and (lock := lock_text(plan, scene)):
             parts.append(lock)
         parts.append(place_line(plan, scene))
     if shots := shots_timeline(plan, scene):
@@ -523,7 +600,10 @@ def compose(plan: dict, scene: dict) -> str:
         parts.append("Timeline:\n" + scene_timeline(plan, scene))
     if audio := audio_text(plan, scene):
         parts.append("Audio: " + audio)
-    parts.append(TAIL_NONE if plan["mode"] == "none" else TAIL_EMPTY if empty else TAIL_PEOPLE.format(who=_whose(plan, scene)))
+    if anchor := looks.medium_anchor(plan):
+        parts.append(anchor)   # rules_v 4, a stylised look: the medium again at the end of every scene
+    parts.append(TAIL_NONE if plan["mode"] == "none" else TAIL_EMPTY if empty else TAIL_PLAIN if bare
+                 else TAIL_NONPERSON.format(keep=KIND_KEEP[kind_of(scene_cast(plan, scene)[0][1])]) if _whose(plan, scene) == "its" else TAIL_PEOPLE.format(who=_whose(plan, scene)))
     return "\n\n".join(p for p in parts if p)
 
 
@@ -536,8 +616,11 @@ def audio_text(plan: dict, scene: dict) -> str:
     # H3 opened them for "her voice singing" out of time with the song
     closed = ""
     if not voice and plan.get("clip") and scene.get("shot") != "sing" and formula(plan) >= 2 and plan["mode"] != "none" \
-            and not nobody(plan, scene):
+            and not nobody(plan, scene) and not no_cast(plan, scene):
         closed = f"No singing and no speech: {_whose(plan, scene)} lips stay closed."
+    if plan.get("clip") and plan["mode"] != "none" and nonperson_singer(plan, scene) and (voice or closed):
+        # rules_v 5: a robot or an animal has no lips - no singing voice, no «its lips stay closed»; the song plays over it
+        voice, closed = "", "No singing and no speech."
     if plan.get("no_music"):
         # the user's own track plays over the video: the scenes make only their natural sound, no music of their own
         natural = "the natural sound of the scene" + (f": {_lower_first(sound)}" if sound else ", quiet ambience.")
@@ -651,6 +734,34 @@ def _absent_mentioned(plan: dict, scene: dict, text: str) -> int:
     return 0
 
 
+# no pronouns or female/male: an animal's beats say «he flicks his tail», and an animal may keep its sex
+HUMAN = re.compile(r"\b(woman|women|man|men|girl|girls|boy|boys|lady|ladies|guy|guys|person|people|singer|human|humans|"
+                   r"freckles|sunglasses|lipstick|makeup|dress|skirt|blouse)\b", re.I)
+
+
+def nonperson_cast(plan: dict) -> bool:
+    """A cast with entries and none of them a person (rules_v 4's kinds): a robot's, an animal's or a creature's video."""
+    cast = plan.get("cast") or []
+    return bool(cast) and plan.get("mode") in ("one", "several") and all(is_nonperson(c) for c in cast)
+
+
+def nonperson_singer(plan: dict, scene: dict) -> bool:
+    """rules_v 5: every voice of the scene's lines belongs to an animal, a robot or a creature - it has no lips to sing
+    with (no voice, no closed lips, no lips check; its frame is its own first beat)."""
+    cast = plan.get("cast") or []
+    who = {ln["who"] for ln in lines_of(plan, scene)} or {i + 1 for i, _ in scene_cast(plan, scene)}
+    return _v5(plan) and bool(cast) and all(1 <= w <= len(cast) and is_nonperson(cast[w - 1]) for w in who)
+
+
+def human_in_nonperson_cast(plan: dict, text: str) -> Optional[str]:
+    """rules_v 5: the text brings a person into a video whose cast has none (the word found) - the writer took a song's
+    words literally and turned the singing robot into a woman. None for an older plan."""
+    if int(plan.get("rules_v") or 0) < 5 or not nonperson_cast(plan):
+        return None
+    m = HUMAN.search(text)
+    return m.group(0) if m else None
+
+
 def _other_gender(plan: dict, text: str) -> Optional[tuple[str, str]]:
     """One hero: the beats speak of a person of a gender the hero is not (a man in a heroine's video) - someone the
     writer made up. (the gender's word, the word found) or None."""
@@ -692,6 +803,9 @@ def scene_problems(plan: dict, scene: dict) -> list[str]:
         out.append("a new scene needs who: the numbers of the characters in it")
     if plan["mode"] != "none" and (m := INVENTED.search(" ".join(beats))):
         out.append(f"only the cast is in the video: no other people ('{m.group(0)}') - the model would draw a random face")
+    if (h := human_in_nonperson_cast(plan, " ".join([*beats, scene.get("place_en", ""), scene.get("to_en", "")]))):
+        out.append(f"the cast has no person, but the scene shows one ('{h}'): the character is the cast's {kind_of(plan['cast'][0])}, "
+                   "the sung words are only a mood - no human, no human body or clothes in any scene")
     if plan["mode"] == "one" and (g := _other_gender(plan, " ".join(beats))):
         out.append(f"the only character is not {g[0]} ('{g[1]}'): no other person in the video")
     if plan["mode"] == "several" and (missing := _absent_mentioned(plan, scene, " ".join(beats))):
@@ -748,10 +862,12 @@ def cast_problems(plan: dict) -> list[str]:
         if c.get("from_photo"):
             continue
         if _words(c.get("en", "")) < 15:
-            out.append(f"character {i + 1}: describe the look in more detail (build, skin, face, eyes, hair)")
+            out.append(f"character {i + 1}: describe the look in more detail ("
+                       + ({"animal": "species, size, fur colour and pattern, eyes, marks", "robot": "shape, materials, colours, lights, wear",
+                          "creature": "body, skin or fur, colours, eyes, distinctive features"}.get(kind_of(c), "build, skin, face, eyes, hair")) + ")")
         if m := CLOTHING.search(c.get("en", "")):
             out.append(f"character {i + 1}: en is the body and face only, clothing goes to outfit_en ('{m.group(0)}')")
-        if m := MINOR.search(c.get("en", "")):
+        if (m := MINOR.search(c.get("en", ""))) and not is_nonperson(c):   # a kitten, a baby bird: not a minor
             out.append(f"character {i + 1}: only adults ('{m.group(0)}')")
     return out
 
@@ -764,6 +880,10 @@ def fix_cast(plan: dict) -> None:
     """Fixed parts of the formula, not filters: "a <age>-year-old <woman / man>" at the start of every description,
     the age 21 or more; a "wearing ..." clause that slipped into the look is cut (the outfit has its own field)."""
     for c in plan.get("cast") or []:
+        if is_nonperson(c):   # no age, no «woman with»: the species / the kind of machine is in the look; only a «wearing» clause is cut
+            c["age"] = 0
+            c["en"] = re.sub(r",?\s*(?<![a-z])(wearing|dressed in|clad in)(?![a-z])[^.]*", "", c.get("en", ""), flags=re.I).strip()
+            continue
         c["age"] = max(MIN_AGE, int(c.get("age") or MIN_AGE))
         en = c.get("en", "")
         if not c.get("from_photo"):

@@ -2,13 +2,14 @@
 // The header's rail: which video this is (a switch to the recent ones) and its stages with their state - the
 // storyboard's scenes and «проверь», how much of the video is shot, whether the montage is the user's own. On the
 // home screen it is «Новый ролик»; in the lab and on a graph the same place says so, so the header keeps its shape.
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import Icon from './Icon.vue'
 import GuideButton from './help/GuideButton.vue'
 import { S } from '../lib/store'
 import { P } from '../lib/project'
+import { shotCount } from '../lib/shoot'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -25,10 +26,7 @@ const kindIcon = (k?: string) => (k === 'graph' ? 'layers' : k === 'clip' ? 'mus
 const est = computed(() => (board.value && P.est ? P.est[board.value.settings?.quality || 'draft'] : null))
 const scenes = computed(() => board.value?.plan?.scenes || [])
 const checks = computed(() => scenes.value.filter((s: any) => s.status === 'check').length)
-const shot = computed(() => {
-  const n = scenes.value.length, left = est.value?.to_shoot
-  return n && left != null ? { done: n - left, all: n } : null
-})
+const shot = computed(() => shotCount(scenes.value.length))
 const stages = computed(() => {
   const p = board.value
   if (!p) return []
@@ -45,6 +43,16 @@ const stages = computed(() => {
       sub: !written ? '' : est.value?.reedit ? t('header.editChanged') : p.edit ? t('header.editOwn') : '' },
   ]
 })
+
+// on a phone the stages are a strip that scrolls: the current one is brought to its start
+const strip = ref<HTMLElement | null>(null)
+async function showCurrent() {
+  await nextTick()
+  const el = strip.value, on = el?.querySelector('.stage.on') as HTMLElement | null
+  if (el && on && el.scrollWidth > el.clientWidth) el.scrollLeft = Math.max(0, on.offsetLeft - 8)
+}
+watch(() => [view.value, routeId.value, stages.value.length], showCurrent)
+onMounted(showCurrent)
 
 // the switch: the recent videos, newest first
 const open = ref(false)
@@ -79,7 +87,7 @@ onUnmounted(() => { document.removeEventListener('click', away); document.remove
     </div>
 
     <!-- a storyboard's stages, each with its state -->
-    <nav v-if="stages.length" class="rail-stages" :aria-label="t('header.rail')">
+    <nav v-if="stages.length" ref="strip" class="rail-stages" :aria-label="t('header.rail')">
       <template v-for="s in stages" :key="s.key">
         <span v-if="s.on" class="stage on" aria-current="page"><b>{{ s.label }}</b><small v-if="s.sub || s.warn">{{ s.sub }}<em v-if="s.warn" :class="{ after: !!s.sub }">{{ s.warn }}</em></small>
           <i v-if="s.fill" class="stage-fill" :style="{ width: `${s.fill * 100}%` }" /></span>
@@ -91,7 +99,7 @@ onUnmounted(() => { document.removeEventListener('click', away); document.remove
       </template>
     </nav>
     <!-- a graph: the canvas, and a node's montage when that is open -->
-    <nav v-else-if="graphProj" class="rail-stages" :aria-label="t('header.rail')">
+    <nav v-else-if="graphProj" ref="strip" class="rail-stages" :aria-label="t('header.rail')">
       <router-link v-if="view === 'gmontage'" :to="`/g/${routeId}`" class="stage"><b>{{ t('header.graph') }}</b><small>{{ t('header.graphSub') }}</small></router-link>
       <span v-else class="stage on" aria-current="page"><b>{{ t('header.graph') }}</b><small>{{ t('header.graphSub') }}</small></span>
       <span v-if="view === 'gmontage'" class="stage on" aria-current="page"><b>{{ t('header.montage') }}</b><small>{{ t('header.nodeMontage') }}</small></span>

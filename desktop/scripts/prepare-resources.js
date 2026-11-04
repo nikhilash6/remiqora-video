@@ -11,7 +11,7 @@ const out = path.join(desktop, 'resources');
 const project = path.join(out, 'project');
 const KEEP = [
   'app', 'engine/pyproject.toml', 'engine/uv.lock', 'engine/core.txt', 'engine/.python-version', 'frontend/dist',
-  'requirements.txt', '.env.example', 'install/manifest.json', 'tools/install_models.py', 'tools/lyrics', 'dev.bat', 'LICENSE',
+  'requirements.txt', '.env.example', 'install/manifest.json', 'tools/install_models.py', 'tools/install_console.py', 'tools/lyrics', 'dev.bat', 'LICENSE',
 ];
 const OPTIONAL = new Set(['engine/.python-version', 'LICENSE']);
 const LOCAL = new Set(['__pycache__', '.venv', 'data', 'outputs', 'projects', 'node_modules', '.env']);

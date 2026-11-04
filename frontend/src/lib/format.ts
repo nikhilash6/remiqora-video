@@ -11,6 +11,8 @@ export const mins = (sec: number) =>
 export const minsTenth = (sec: number) =>
   sec < 90 ? `${Math.round(sec)} ${t('common.s')}` : `${(sec / 60).toLocaleString(tag(), { maximumFractionDigits: 1 })} ${t('common.min')}`
 export const mmss = (s: number) => { const r = Math.round(s); return `${Math.floor(r / 60)}:${String(r % 60).padStart(2, '0')}` }   // 119.8 -> 2:00, not 1:60
+// a video's length as the player shows it (whole seconds, the fraction cut): the shelf, the video page and the montage all say the same
+export const dur = (s: number) => { const r = Math.floor(s + 1e-6); return `${Math.floor(r / 60)}:${String(r % 60).padStart(2, '0')}` }
 export const gb = (v: number) => v.toLocaleString(tag(), { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 // frames at 24 fps -> seconds with one decimal
 export const secs = (frames: number) => (frames / 24).toLocaleString(tag(), { minimumFractionDigits: 1, maximumFractionDigits: 1 })

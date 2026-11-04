@@ -5,12 +5,15 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Handle, Position } from '@vue-flow/core'
 import Icon from '../Icon.vue'
-import { ENGINE_NAME, GE, ICON, PORT_COLOR, PORT_LABEL, WHO_COLOR, fileUrl, inputsOf, live, nodeOf, refLoraOf, secondsOf, tOf, typeTitle } from '../../lib/graphDoc'
+import { ENGINE_NAME, GE, ICON, PORT_COLOR, PORT_LABEL, PORT_Y, WHO_COLOR, fileUrl, inputsOf, live, nodeOf, portsOf, refLoraOf, secondsOf, tOf, typeTitle } from '../../lib/graphDoc'
 import { outLabel } from '../../lib/project'
+import { KIND_ICON } from '../../lib/consts'
 import { nextStep } from '../../lib/nodeHelp'
-import { dec, mins } from '../../lib/format'
+import { dec, mins, mmss } from '../../lib/format'
 import { S } from '../../lib/store'
+import { lookName } from '../../lib/looks'
 import { useResize } from './resize'
+import WriterThinking from '../WriterThinking.vue'
 
 const props = defineProps<{ id: string; data: Record<string, any>; selected?: boolean }>()
 const { t: tx } = useI18n()
@@ -19,13 +22,14 @@ const rsz = useResize(() => props.id)
 // the tile's own size (dragged by its corner): with a height the body fills it instead of its usual few lines
 const sized = computed(() => ({ width: props.data.w ? `${props.data.w}px` : undefined, height: props.data.h ? `${props.data.h}px` : undefined }))
 const spec = computed(() => GE.types[t.value])
-// a «Картинка» by Krea 2 reads its text alone: no «образцы» port (FLUX.2 Klein has it)
-const ins = computed(() => Object.entries(spec.value?.in || {}).filter(([p]) => !(p === 'ref' && t.value === 'picture' && props.data.model !== 'flux2')))
-const outs = computed(() => Object.entries(spec.value?.out || {}))
+// its ports in rows (graphDoc.portsOf: «Упорядочить» lines the links up by the same rows)
+const ports = computed(() => portsOf(t.value, props.data))
+const ins = computed(() => ports.value.ins)
+const outs = computed(() => ports.value.outs)
 const st = computed(() => GE.state?.nodes[props.id])
 const job = computed(() => live())
 const row = computed(() => job.value?.progress?.nodes?.[props.id] as Record<string, any> | undefined)
-const top = (k: number) => `${50 + k * 24}px`
+const top = (k: number) => `${PORT_Y(k)}px`
 const title = computed(() => props.data.title || typeTitle(t.value))
 const img = computed(() => {
   const s = st.value
@@ -41,7 +45,7 @@ const status = computed(() => {
   if (r) {
     if (r.status === 'running') {
       const step = j && j.phase === 'sampling' && j.steps ? tx('nodes.card.step', { a: j.step, b: j.steps }) : j?.phase === 'loading' ? tx('nodes.card.loading') : ''
-      return { cls: 'now', text: (t.value === 'writer' ? tx('nodes.card.writing') : t.value === 'hero' ? tx('nodes.card.describing') : tx('nodes.card.going')) + step }
+      return { cls: 'now', text: (t.value === 'writer' || t.value === 'clip_writer' ? tx('nodes.card.writing') : t.value === 'hero' ? tx('nodes.card.describing') : tx('nodes.card.going')) + step }
     }
     if (r.status === 'done') return { cls: 'ok', text: r.seconds ? tx('nodes.card.doneS', { s: Math.round(r.seconds) }) : tx('nodes.card.done') }
     if (r.status === 'cached') return { cls: 'ok', text: tx('nodes.card.cached') }
@@ -53,13 +57,13 @@ const status = computed(() => {
   if (!s) return { cls: 'muted', text: '' }
   const make = tx(t.value === 'scene' ? 'nodes.card.toShoot' : t.value === 'picture' ? 'nodes.card.draw' : t.value === 'v2v' || t.value === 'facefix' ? 'nodes.card.rebuild' : 'nodes.card.build')
   switch (s.state) {
-    case 'ready': return { cls: 'ok', text: ['scene', 'v2v', 'facefix', 'sound', 'picture', 'frame', 'join', 'montage', 'music', 'output'].includes(t.value) ? tx('nodes.card.done') : t.value === 'writer' ? tx('nodes.card.written') : '' }
+    case 'ready': return { cls: 'ok', text: ['scene', 'v2v', 'facefix', 'sound', 'picture', 'frame', 'join', 'montage', 'music', 'output'].includes(t.value) ? tx('nodes.card.done') : t.value === 'writer' || t.value === 'clip_writer' ? tx('nodes.card.written') : '' }
     case 'todo': return { cls: 'todo', text: make }
     case 'wait': return { cls: 'muted', text: t.value === 'scene' ? tx('nodes.card.waitStart') : tx('nodes.card.waitInputs') }
     case 'blocked': return { cls: 'warn', text: tx('nodes.card.inputError') }
     case 'error': return { cls: 'bad', text: s.error || tx('nodes.card.error') }
-    case 'stale': return { cls: 'warn', text: t.value === 'writer' ? tx('nodes.card.writerStale') : tx('nodes.card.heroStale') }
-    case 'empty': return { cls: 'muted', text: t.value === 'writer' ? tx('nodes.card.writerEmpty') : tx('nodes.card.heroEmpty') }
+    case 'stale': return { cls: 'warn', text: t.value === 'writer' || t.value === 'clip_writer' ? tx('nodes.card.writerStale') : tx('nodes.card.heroStale') }
+    case 'empty': return { cls: 'muted', text: t.value === 'writer' || t.value === 'clip_writer' ? tx('nodes.card.writerEmpty') : tx('nodes.card.heroEmpty') }
     default: return { cls: 'muted', text: '' }
   }
 })
@@ -80,7 +84,9 @@ const body = computed(() => {
     case 'facefix': { const n = st.value?.note; return tx(`nodesPanel.ffModes.${d.mode || 'far'}`) + (n ? (n.faces ? tx('nodes.card.ffFixed', { n: n.fixed }) : tx('nodes.card.ffNone')) : '') }
     case 'frame': return d.at === 'last' || d.at == null || d.at === '' ? tx('nodes.card.lastFrame') : tx('nodes.card.frameAt', { s: dec(d.at) })
     case 'join': return tx('nodes.card.joinN', inputsOf(props.id, 'clips').length)
-    case 'montage': { const e = d.edit, n = inputsOf(props.id, 'clips').length; return `${tx('nodes.card.montageN', n)}${e ? tx('nodes.card.ownEdit') : tx('nodes.card.asInput')}${st.value?.seconds ? tx('nodes.card.secs', { s: Math.round(st.value.seconds) }) : ''}` }
+    case 'montage': { const e = d.edit, n = inputsOf(props.id, 'clips').length; return `${tx('nodes.card.montageN', n)}${d.beats ? tx('nodes.card.beats') : ''}${e ? tx('nodes.card.ownEdit') : tx('nodes.card.asInput')}${st.value?.seconds ? tx('nodes.card.secs', { s: Math.round(st.value.seconds) }) : ''}` }
+    case 'song': { const pc = st.value?.piece; return !d.file ? tx('nodes.card.songNone') : `${d.name || ''}${pc ? '\n' + tx('nodes.card.songPiece', { a: mmss(pc[0]), b: mmss(pc[1]), s: Math.round(pc[1] - pc[0]) }) : ''}` }
+    case 'clip_writer': { const p = d.plan; return p ? tx('nodes.card.clipPlan', { title: p.title_ru || tx('nodes.card.storyboard') }, p.scenes.length) : tx('nodes.card.clipNew') }
     case 'writer': { const p = d.plan; return p ? tx('nodes.card.writerPlan', { title: p.title_ru || tx('nodes.card.storyboard') }, p.scenes.length) : tx('nodes.card.writerNew', { s: d.seconds || 15, mood: d.mood || '' }) }
     default: return ''
   }
@@ -92,7 +98,7 @@ const badges = computed(() => {
   if (t.value !== 'scene') return []
   const d = props.data, out: string[] = []
   const takes = d.takes || [], secs = secondsOf(nodeOf(props.id))
-  if (secs !== 5) out.push(tx('nodes.card.badgeS', { s: secs }))
+  if (secs !== 5) out.push(tx('nodes.card.badgeS', { s: dec(secs) }))
   if (takes.length > 1) out.push(tx('nodes.card.badgeTake', { a: (d.take || 0) + 1, b: takes.length }))
   const start = inputsOf(props.id, 'start')[0], from = start ? nodeOf(start.source) : null
   if (from) out.push(tx(['scene', 'frame'].includes(tOf(from)) ? 'nodes.card.fromFrame' : tOf(from) === 'picture' ? 'nodes.card.fromPicture' : 'nodes.card.fromPhoto'))
@@ -101,6 +107,8 @@ const badges = computed(() => {
   if (ref?.v2v) out.push(tx(ref.v2v.reads === 'voice' ? 'nodes.card.byVoice' : 'nodes.card.byClip', { e: ENGINE_NAME[ref.v2v.engine] }))
   else if (inputsOf(props.id, 'faces').length) out.push('Ref2VA')
   if (inputsOf(props.id, 'lora').length && !ref) out.push('LoRA')
+  if (d.model) out.push(S.cfg?.video_models?.find((m) => m.id === d.model)?.short || d.model)   // a scene of its own model
+  if (d.look && d.look !== 'auto') out.push(`◆ ${tx('looks.lookChip', { name: lookName(d.look) })}`)   // the scene's own look (app/graph.look_text)
   return out
 })
 </script>
@@ -114,7 +122,7 @@ const badges = computed(() => {
     <span v-for="([p], k) in ins" :key="'li' + p" class="pl in" :style="{ top: top(k) }">{{ PORT_LABEL[p] || p }}</span>
     <span v-for="([p], k) in outs" :key="'lo' + p" class="pl out" :style="{ top: top(k) }">{{ PORT_LABEL[p] || p }}</span>
     <div class="ge-in"><!-- what the tile holds; the ports and their labels stay outside it, so a sized tile clips only this -->
-    <header><Icon :name="ICON[t] || 'layers'" :size="14" /><b>{{ title }}</b><span class="grow" />
+    <header><Icon :name="(t === 'hero' && data.kind ? KIND_ICON[data.kind] : ICON[t]) || 'layers'" :size="14" /><b>{{ title }}</b><span class="grow" />
       <span v-if="t === 'scene' && data.takes?.length" class="seed" :title="tx('nodes.card.seed')">#{{ data.takes[data.take || 0] }}</span></header>
     <div v-if="img || ['scene', 'v2v', 'facefix', 'picture', 'frame'].includes(t)" class="ge-thumb" :class="{ alpha: t === 'v2v' && st?.alpha }">
       <img v-if="img" :src="img" alt="" draggable="false">
@@ -125,6 +133,7 @@ const badges = computed(() => {
     <p v-if="t === 'scene' && st?.warn" class="ge-warn" :title="st.warn"><Icon name="warn" :size="12" />{{ tx('nodes.card.faceDrift') }}</p>
     <p v-if="t === 'scene' && st?.checks?.length" class="ge-warn" :title="st.checks.map((x) => tx('nodes.card.checkAt', { name: x.name, at: dec(x.at) })).join('; ')"><Icon name="warn" :size="12" />{{ st.checks[0].name }}{{ st.checks.length > 1 ? tx('nodes.card.andMore', { n: st.checks.length - 1 }) : '' }}</p>
     <div v-if="badges.length" class="ge-badges"><span v-for="b in badges" :key="b">{{ b }}</span></div>
+    <WriterThinking v-if="(t === 'writer' || t === 'clip_writer') && job" class="ge-think" :job="job" :node="id" compact />
     <p v-if="need" class="ge-need" :title="need"><Icon name="forward" :size="12" />{{ need }}</p>
     <footer v-if="status.text" :class="status.cls" :title="status.text">{{ status.text }}</footer>
     </div>

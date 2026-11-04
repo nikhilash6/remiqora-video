@@ -2,11 +2,12 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
-const { PLATFORM, resourcePaths, manifestPath, defaultDataRoot, layout } = require('./paths');
+const { PLATFORM, resourcePaths, manifestPath } = require('./paths');
 const { runChecks } = require('./bootstrap/checks');
 const { describePlan, runSetup, isReady } = require('./bootstrap/run');
 const { setStatus, withNeeds, profileOf } = require('./bootstrap/sets');
 const { BackendServer } = require('./server');
+const { makeContext } = require('./context');
 const { loadConfig, updateConfig, ensureWritableDir } = require('./config');
 
 if (process.env.REMIQORA_VIDEO_USER_DATA) app.setPath('userData', process.env.REMIQORA_VIDEO_USER_DATA);
@@ -31,20 +32,7 @@ let quitting = false;
 let saved = {};
 let pendingHfToken = null;   // a token the screen checked; saved into the chosen folder at the start
 
-/** The context every call works with: the folders and what is picked. */
-function buildContext(cfg) {
-  const L = layout(cfg.dataRoot || defaultDataRoot(), cfg.modelsDir);
-  const find = (cfg.find || []).filter((d) => fs.existsSync(d));
-  // what is on disk already counts as picked: a later run only adds (a set is never removed by the installer)
-  const status = setStatus(manifest, [L.models, ...find]);
-  const picked = cfg.sets || manifest.profiles.minimum;
-  const sets = withNeeds(manifest, [...picked, ...Object.keys(status).filter((id) => status[id].complete && cfg.sets)]);
-  return {
-    L, manifest, resources, platform: PLATFORM, selection: { sets, find },
-    skip: (process.env.REMIQORA_VIDEO_SKIP_COMPONENTS || '').split(',').map((s) => s.trim()).filter(Boolean),
-    lang: cfg.lang || 'ru',
-  };
-}
+const buildContext = (cfg) => makeContext(cfg, { manifest, resources, platform: PLATFORM });
 
 const rebuild = () => { ctx = buildContext(saved); };
 const save = async (patch) => { saved = await updateConfig(app.getPath('userData'), patch); rebuild(); };
@@ -154,6 +142,7 @@ function registerIpc() {
       }])),
       profiles: manifest.profiles,
       picked: ctx.selection.sets,
+      h3Accepted: !!saved.h3Accepted,   // the MiniMax H3 region question, remembered for a resumed install
       profile: profileOf(manifest, ctx.selection.sets),
       plan,
       needs: neededBytes(plan),
@@ -166,6 +155,7 @@ function registerIpc() {
   ipcMain.handle('setup:set-sets', async (_e, sets) => {
     await save({ sets: withNeeds(manifest, Array.isArray(sets) ? sets : []) });
   });
+  ipcMain.handle('setup:accept-h3', async (_e, value) => { await save({ h3Accepted: !!value }); });
   ipcMain.handle('setup:set-lang', async (_e, lang) => { if (lang !== saved.lang) await save({ lang }); });
   ipcMain.handle('setup:choose-folder', async (_e, kind) => {
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], defaultPath: kind === 'models' ? ctx.L.models : ctx.L.root });

@@ -1,0 +1,82 @@
+/* «Подача» и «Вид» (LookPanel.vue, LookPick.vue), the board's chips and the graph's
+   «Стиль проекта» bar */
+.start-form.is-writer { grid-template-areas: "head head head" "main mid side" "looks looks looks" "foot foot foot"; }
+.sf-looks { grid-area: looks; min-width: 0; padding-top: 16px; border-top: 1px solid var(--rule); }
+.lp { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.lp-row { display: flex; flex-direction: column; gap: 10px; }
+.lp-del .chip { min-height: 32px; padding: 0 13px; font-size: 13.5px; }
+.lp-del .chip.lp-auto:not(.on) { color: var(--accent-hi); border-color: var(--accent-deep); }
+.lp-del .chip.picked, .lp-tile.picked .lp-pic { outline: 2px dashed var(--accent2); outline-offset: 2px; }
+.lp-look { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 20px; }
+.lp-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.lp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.lp-tabs { display: flex; flex-wrap: wrap; gap: 2px; }
+.lp-tabs button { border: 0; background: transparent; color: var(--muted); padding: 6px 11px; border-radius: 8px; font-size: 13.5px; }
+.lp-tabs button:hover { color: var(--text); background: var(--hover); }
+.lp-tabs button.on { color: #fff; background: var(--accent-deep); }
+.lp-find { margin-left: auto; width: 210px; min-height: 34px; }
+.lp-groups { display: flex; flex-direction: column; gap: 10px; }
+.lp-group { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; align-items: start; }
+.lp-gname { padding-top: 26px; font: 600 12px/1.2 var(--ui); letter-spacing: .6px; text-transform: uppercase; color: var(--accent-hi); }
+.lp-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
+.lp-tile { display: flex; flex-direction: column; padding: 0; border: 1px solid var(--rule-2); border-radius: 9px; background: var(--deep); color: var(--soft); overflow: hidden; text-align: center; }
+.lp-tile:hover { border-color: var(--faint); color: #fff; }
+.lp-tile.on { border-color: transparent; box-shadow: 0 0 0 2px var(--accent); color: #fff; }
+.lp-pic { position: relative; display: flex; align-items: center; justify-content: center; aspect-ratio: 16 / 10; overflow: hidden; }
+.lp-pic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.lp-pic i { font-style: normal; font-size: 22px; color: rgba(255, 255, 255, .85); text-shadow: 0 1px 3px rgba(0, 0, 0, .4); }
+.lp-frame { position: absolute; left: 4px; bottom: 4px; padding: 1px 5px; border-radius: 6px; background: rgba(0, 0, 0, .62); color: #fff; font: 500 10px/1.4 var(--ui); font-style: normal; }
+.lp-frame-note { margin: 8px 0 0; font-size: 12px; line-height: 1.4; }
+.lp-name { padding: 5px 4px 6px; font-size: 12px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lp-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.lp-pick { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--accent-deep); background: var(--accent-bg); }
+.lp-pick-h { font-size: 13px; color: var(--soft); }
+.lp-pick b { font-size: 15px; }
+.lp-pick p { margin: 0; font-size: 13px; color: var(--soft); line-height: 1.4; }
+.lp-pick .link-btn { margin: 0; }
+.lp-pick small, .lp-later { font-size: 12px; color: var(--muted); line-height: 1.4; margin: 0; }
+.lp-side textarea { resize: vertical; min-height: 70px; }
+.lp-save { border-color: var(--accent); color: var(--accent-hi); border-radius: 20px; }
+.lp-naming { display: flex; flex-direction: column; gap: 8px; }
+.lp-naming-acts { display: flex; align-items: center; gap: 10px; }
+.lp-mine { display: flex; flex-direction: column; gap: 8px; }
+.lp-mine small { font-size: 12px; line-height: 1.4; }
+.lp-mchip { padding: 0 4px 0 12px; gap: 2px; }
+.lp-mchip button { border: 0; background: transparent; color: inherit; font: inherit; padding: 0; }
+.lp-mchip .lp-x { width: 24px; height: 24px; border-radius: 50%; color: var(--muted); }
+.lp-mchip .lp-x:hover { color: var(--bad, #ef4444); background: var(--hover); }
+.lp.compact .lp-look { grid-template-columns: minmax(0, 1fr) 240px; }
+.lp.compact .lp-group { grid-template-columns: 92px minmax(0, 1fr); }
+.lpk { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.lpk-btn { display: inline-flex; align-items: center; min-height: 36px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--rule-input, var(--rule-2)); background: var(--field); color: var(--soft); font-size: 13.5px; }
+.lpk-btn:hover:not(:disabled) { border-color: var(--faint); color: #fff; }
+.lpk-btn:disabled { opacity: .55; cursor: default; }
+.lpk-btn.chip { min-height: 30px; border-radius: 16px; border-color: var(--accent-deep); color: var(--accent-hi); }
+.lpk-sep { margin: 0 8px; color: var(--faint); }
+/* the home v3: icons before the two words, the chosen look's colours, the names in the text colour */
+.is-selects .lpk-btn { gap: 7px; min-height: 38px; padding: 0 12px 0 10px; }
+.is-selects .lpk-btn .lpk-sep { margin: 0 3px; }
+.lpk-ic { color: var(--soft); }
+.lpk-part { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.lpk-part b { font-weight: 500; color: var(--text); }
+.lpk-sw { display: inline-block; width: 14px; height: 14px; border-radius: 4px; margin: 0 2px; }
+.lpk-down { color: var(--muted); }
+.lpk-now { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.lpk-done { background: var(--grad); border-color: transparent; color: #fff; min-width: 140px; }
+.bh-looks { margin-top: 10px; }
+/* the graph's «Стиль проекта», under its tools */
+.graph-style { position: absolute; left: 16px; top: 62px; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 6px 10px; border-radius: 10px;
+  max-width: calc(100% - 32px); background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--rule); }
+.graph-style .gst-lbl { font: 600 13px var(--ui); color: var(--accent-hi); }
+.graph-style .small { font-size: 12px; }
+@media (max-width: 1180px) {
+  .start-form.is-writer { grid-template-areas: "head head" "main side" "mid side" "looks looks" "foot foot"; }
+  .lp-look, .lp.compact .lp-look { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+  .start-form.is-writer { grid-template-areas: "head" "main" "mid" "side" "looks" "foot"; }
+  .lp-group, .lp.compact .lp-group { grid-template-columns: minmax(0, 1fr); }
+  .lp-gname { padding-top: 0; }
+  .lp-find { width: 100%; margin-left: 0; }
+  .lp-tiles { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); }
+}

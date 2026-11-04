@@ -171,7 +171,33 @@ def summary(proj: dict) -> dict:
             "manual": bool(plan.get("manual")),
             "kind": "clip" if clip else "manual" if plan.get("manual") else "board",
             "source": "remiqora" if clip.get("imported") else None, "models": _models(plan, s),
-            "photo": f"/api/projects/{proj['id']}/photo" if s.get("photo") else None, **_shot_info(proj)}
+            "photo": f"/api/projects/{proj['id']}/photo" if s.get("photo") else None, **_shot_info(proj),
+            "looks": _looks(plan, s) if plan.get("scenes") else _looks({k: v for k, v in s.items() if k in ("delivery", "look", "look_own", "look_mine", "look_pick")}, s, True),
+            "auto": _auto(proj)}
+
+
+def _looks(src: dict, settings: dict, form: bool = False) -> Optional[dict]:
+    """«Подача · Вид» of the card: the ones in effect (the writer's pick for «Решит сценарист»), and whether the user
+    chose them; a project from before the looks - its mood mapped; nothing chosen nor picked yet - None."""
+    from . import looks
+    p = dict(src)
+    looks.migrate(p, settings.get("mood", ""))
+    if not form and not looks.active(src):
+        return None   # written before the looks: a mood mapped is a guess, an anime clip would read «Живое кино»
+    chosen = p.get("delivery") != looks.AUTO or p.get("look") != looks.AUTO
+    if not chosen and not p.get("look_pick"):
+        return None   # «Решит сценарист» and the writer has not picked yet: nothing to say
+    d, lk = looks.resolve(p)
+    return {"delivery": d, "look": lk, "chosen": chosen}
+
+
+def _auto(proj: dict) -> Optional[dict]:
+    """«Сделать ролик» on the card: where it is, whether it failed, stopped or waits for the user."""
+    a = proj.get("autopilot")
+    if not a:
+        return None
+    return {"stage": a.get("stage"), "done": a.get("done") or [], "error": a.get("error"), "stopped": bool(a.get("stopped")),
+            "finished": bool(a.get("finished")), "ask": (a.get("ask") or {}).get("kind"), "what": (a.get("req") or {}).get("what")}
 
 
 def _base_model(m: Optional[str]) -> str:
@@ -230,7 +256,8 @@ def _graph_summary(proj: dict) -> dict:
             "updated": proj.get("updated"), "scenes": n, "seconds": secs, "mode": None,
             "aspect": s.get("aspect"), "quality": s.get("quality"), "checks": 0, "written": True, "manual": False, "photo": None,
             "kind": "graph", "source": None, "models": [{"id": _base_model(s.get("video_model")), "n": n}],
-            "poster": poster, "video": i18n.L("граф", "graph") if outs else None}
+            "poster": poster, "video": i18n.L("граф", "graph") if outs else None,
+            "looks": _looks({k: v for k, v in s.items() if k in ("delivery", "look", "look_own", "look_mine", "look_pick")}, s, True), "auto": None}
 
 
 def _shot_info(proj: dict) -> dict:

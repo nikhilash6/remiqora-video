@@ -11,7 +11,7 @@ import ShootConfirm from './ShootConfirm.vue'
 import { S } from '../../lib/store'
 import { P, flushSave, startRender } from '../../lib/project'
 import { episodes, shotPng } from '../../lib/board'
-import { useShoot } from '../../lib/shoot'
+import { shotCount, useShoot } from '../../lib/shoot'
 import { mins, mmss } from '../../lib/format'
 import type { Plan } from '../../lib/types'
 
@@ -36,7 +36,8 @@ const tabs = computed(() => [
   ...(props.p.clip ? [['song', 'music', t('board.bar.song'), t('board.bar.songSub')]] : []),
   ['video', 'clapper', t('board.bar.video'), `${mmss(props.p.seconds)}, ${P.proj!.settings.aspect}, ${model.value?.short || model.value?.name || 'H3'}`],
 ] as [typeof P.tab, string, string, string][])
-const shot = computed(() => props.p.scenes.filter((s) => shotPng(s.index)).length)
+// the same count as the header's rail (lib/shoot.ts shotCount); the stills on disk until the estimate is there
+const shot = computed(() => shotCount(n.value)?.done ?? props.p.scenes.filter((s) => shotPng(s.index)).length)
 </script>
 
 <template>
@@ -51,6 +52,7 @@ const shot = computed(() => props.p.scenes.filter((s) => shotPng(s.index)).lengt
       <template v-if="P.saveState === 'error'"><Icon name="warn" :size="13" />{{ t('board.saveFailed') }} <button type="button" class="link-btn" @click="flushSave()">{{ t('board.saveRetry') }}</button></template>
       <template v-else-if="P.saveState === 'saving'">{{ t('board.saving') }}</template>
       <template v-else><Icon name="check" :size="13" />{{ t('board.saved') }}</template></span>
+    <div class="bb-cta">
     <div class="bb-prog" :title="t('board.bar.facts')">
       <div><b>{{ t('board.bar.shotOf', { k: shot, n }) }}</b><small>{{ shot === n ? t('board.bar.allShot') : t('board.bar.left', n - shot) }}</small></div>
       <span class="bb-pbar"><i :style="{ width: `${(shot / Math.max(1, n)) * 100}%` }" /></span>
@@ -58,6 +60,7 @@ const shot = computed(() => props.p.scenes.filter((s) => shotPng(s.index)).lengt
     <router-link v-if="done" class="primary bb-go" :to="`/p/${P.proj!.id}/video`"><Icon name="play" :size="16" />{{ t('board.shoot.openVideo') }}, {{ done.video_up ? '1080p' : done.width }}</router-link>
     <button v-else-if="waiting" type="button" class="primary bb-go" disabled><i class="spin" />{{ t('board.pre.waiting') }}</button>
     <button v-else type="button" class="primary bb-go" @click="shoot"><Icon :name="mainIcon" :size="16" />{{ mainLabel }}, ~{{ mins(eta(cur)) }}</button>
+    </div>
     <ShootConfirm :p="p" :open="ask" @close="ask = false" />
   </div>
 </template>

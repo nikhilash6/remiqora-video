@@ -17,7 +17,7 @@ import { P, projectCall } from '../../lib/project'
 import { api } from '../../lib/api'
 import { banner } from '../../lib/store'
 import { QL } from '../../lib/consts'
-import { dec } from '../../lib/format'
+import { dec, dur } from '../../lib/format'
 import { buildState, graphEdit as graph } from '../../lib/editBuild'
 
 const router = useRouter()
@@ -381,7 +381,11 @@ defineExpose({ upload })
 
   <div v-else class="stack ei">
     <span class="lbl">{{ t('edit.music') }}</span>
-    <p v-if="graph" class="muted small">{{ t('edit.graphTrack') }}</p>
+    <template v-if="graph && v?.track">
+      <span class="muted small">{{ v.track.name }} · {{ tc(v.track.duration || 0) }}</span>
+      <p class="muted small">{{ v.track.beats ? t('edit.graphSong', { s: num(v.track.offset || 0), d: num(v.track.delay || 0) }) : t('edit.graphTrackIn', { s: num(v.track.offset || 0) }) }}</p>
+    </template>
+    <p v-else-if="graph" class="muted small">{{ t('edit.graphTrack') }}</p>
     <label v-if="!track && !graph" class="btn"><Icon name="music" />{{ t('edit.ownTrackAll') }}<input type="file" accept="audio/*,.mp3,.wav,.m4a,.flac,.ogg" hidden @change="upload"></label>
     <span class="lbl">{{ t('edit.sounds') }}</span>
     <button type="button" class="btn" @click="emit('addSound')"><Icon name="volume" />{{ t('edit.soundFile') }}</button>
@@ -393,11 +397,11 @@ defineExpose({ upload })
   <!-- the montage -->
   <div class="stack ei">
     <span class="lbl">{{ t('edit.montage') }} <HelpQ id="edit" /></span>
-    <span class="ei-big">{{ tc(ED.duration) }}</span>
+    <span class="ei-big">{{ dur(ED.duration) }}</span>
     <span class="muted">{{ t('edit.clips', n) }} · {{ QL[q] }}{{ v ? ` · ${v.width}×${v.height}` : '' }}{{ v?.changed ? t('edit.changed') : graph ? t('edit.asInput') : t('edit.asBoard') }}</span>
     <div v-if="buildState === 'error'" class="warn-line"><Icon name="warn" :size="14" /><span>{{ v?.error }}</span></div>
     <div v-else-if="v && v.to_shoot" class="warn-line"><Icon name="warn" :size="14" /><span>{{ t('edit.notShotScenes', v.to_shoot) }}</span></div>
-    <div v-else-if="buildState === 'same'" class="ok-line"><Icon name="check" :size="14" /><span>{{ t('edit.builtSame') }}</span></div>
+    <!-- «built by this montage» is said once, by the chip in the bar -->
     <div v-else-if="buildState !== 'building'" class="warn-line"><Icon name="warn" :size="14" /><span>{{ v?.built ? t('edit.builtOld') : t('edit.notBuilt') }}</span></div>
     <div v-if="jumps.length" class="stack ei-jumps"><span class="lbl">{{ t('edit.jumps', jumps.length) }}</span>
       <div class="ei-acts"><button v-for="j in jumps" :key="j.id" type="button" class="btn" @click="ED.sel = SEAM + j.id"><Icon name="warn" />{{ tc(j.start) }} · {{ j.name }}</button></div></div>

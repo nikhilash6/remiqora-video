@@ -6,6 +6,8 @@ export interface VideoModel {
   id: string; name: string; short: string; text: string; sound: boolean; voice: boolean; refs: boolean; track: boolean; ends?: boolean
   max_seconds: number; grid_seconds?: number; license: string; steps: number; sizes: Record<string, { w: number; h: number }>; missing: string[]
   mp: Record<string, number>; step: number; per_scene: Record<string, number>
+  installed?: boolean  // all its weights are there (the server lists these first)
+  default?: boolean    // the model a new project takes
   imported?: boolean   // shots brought from remiqora-video: named on a scene, never offered
   color: string        // the shelf's ribbon and filter dots, «Модели и настройки»'s disk bar
 }
@@ -21,6 +23,9 @@ export interface Config {
   aspects: { id: string; ratio: number }[]
   qualities: Quality[]
   video_models: VideoModel[]
+  default_video_model?: string   // the first installed one (H3, LTX 2.5, LTX 2.3, WAN): a NEW project/clip/graph shoots with it
+  clip_video_model?: string   // a NEW clip from a song: the first installed one that shoots to the track (LTX 2.3), else the first installed
+  no_video_model?: boolean       // not one video model is installed
   problems: string[]
   max_prompt: number
   fps: number
@@ -52,13 +57,14 @@ export interface Sys {
   engine: string
   engine_ram: number | null
   engine_model?: string | null   // phase 10: whose weights sit in memory (H3, LTX 2.5...)
+  where?: 'local' | 'cloud' | 'server'   // where the models run («Где работают модели»)
   busy: boolean
   llm: string | null
   procs: Record<string, number | null>
   vram_by: { key: string; gb: number }[]
 }
 export interface LlmModel { id: string; name: string; size_gb: number; vision: boolean }
-export interface LlmList { models: LlmModel[]; default: string | null; server_ok: boolean }
+export interface LlmList { models: LlmModel[]; default: string | null; server_ok: boolean; deploying?: string[] }
 export interface Lora {
   id: string; model: string; name: string; folder: string; size_mb: number; kind: string; verdict: string; note: string
   rank: number; blocks: number; base: string; trigger: string; preview: string | null

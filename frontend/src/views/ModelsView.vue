@@ -9,17 +9,20 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '../components/Icon.vue'
+import FolderList from '../components/FolderList.vue'
 import GuideButton from '../components/help/GuideButton.vue'
+import CloudPanel from '../components/CloudPanel.vue'
 import { api, post } from '../lib/api'
 import { S, banner, keep, loadLlms, loadLoras } from '../lib/store'
 import { gb, mins } from '../lib/format'
 import { currentLocale } from '../i18n'
 import { setTextLang as setTL } from '../lib/textLang'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const props = defineProps<{ section?: string }>()
 // the tree: [group, [[key, the name (a key of models.sec, or a name as is), icon]]]; Ref2VA is a sub-item of H3
 const GROUPS: [string, [string, string, string][]][] = [
+  ['where', [['cloud', '', 'cloud']]],   // «Где работают модели»: this computer, a rented server, the user's own (CloudPanel)
   ['video', [['h3', '', 'film'], ['ltx25', 'LTX 2.5', 'clapper'], ['ltx23', 'LTX 2.3', 'music'], ['wan5b', 'WAN 2.2 5B', 'image']]],
   ['photo', [['krea', '', 'brush'], ['flux2', '', 'spark']]],
   ['writer', [['llm', '', 'spark']]],
@@ -44,7 +47,17 @@ const specs = computed<{ v: string; l: string; n?: string }[]>(() => {
 // what a video model can do, as marks; «no sound» is a mark that something is missing
 const caps = computed(() => {
   const c = sec.value?.card
-  return c ? [{ x: c.sound ? t('models.can.sound') : t('models.can.noSound'), off: !c.sound }, ...['voice', 'refs', 'track'].filter((k) => c[k]).map((k) => ({ x: t(`models.can.${k}`), off: false }))] : []
+  const ICON: Record<string, string> = { voice: 'text', refs: 'face', track: 'music' }
+  return c ? [{ x: c.sound ? t('models.can.sound') : t('models.can.noSound'), off: !c.sound, icon: 'volume' },
+    ...['voice', 'refs', 'track'].filter((k) => c[k]).map((k) => ({ x: t(`models.can.${k}`), off: false, icon: ICON[k] }))] : []
+})
+// where this model runs now: the rented card in the cloud, the own server, or this computer
+const runs = computed(() => {
+  const w = snap.value?.where
+  if (!w || sel.value === 'tools' || sel.value === 'cloud') return null
+  if (w.mode === 'cloud') return { icon: 'cloud', text: w.gpu ? `${w.gpu} · ${w.provider}` : t('cloud.navSub.cloud'), title: t('models.runsCloud') }
+  if (w.mode === 'server') return { icon: 'link', text: w.host || t('cloud.navSub.server'), title: t('models.runsServer') }
+  return { icon: 'film', text: t('cloud.navSub.local'), title: t('models.runsLocal') }
 })
 const license = computed(() => sec.value?.card?.license || (sel.value === 'krea' ? 'Krea 2 Community License' : sel.value === 'flux2' ? 'Apache-2.0' : ''))
 // the LoRA list draws pictures only when some LoRA has one, a column of empty squares says nothing
@@ -53,13 +66,38 @@ const snap = ref<Record<string, any> | null>(null)
 // in the desktop app (its window gives the page this): the installer's own sets, official weights only, added from here
 const desktop = (window as any).remiqoraVideo as { addSets?: () => Promise<void> } | undefined
 const err = ref('')
+// ENGINE=remote: the files are the cloud disk's (the server's list, the last known one when the pod is stopped, or the deploy's sets)
+const cloudSnap = computed(() => snap.value?.cloud_files as { source: string; at: number; count: number } | null | undefined)
+const cloudNote = computed(() => {
+  const c = cloudSnap.value
+  if (!c) return ''
+  if (c.source === 'live') return t('models.cloudLive')
+  if (c.source === 'cached') return t('models.cloudCached', { d: new Date(c.at * 1000).toLocaleString(locale.value) })
+  return t(c.source === 'manifest' ? 'models.cloudManifest' : 'models.cloudNone')
+})
 const askDel = ref<string | null>(null)
 // the old «LoRA» and «Ref2VA» sections live inside H3's card now; an old link to them opens H3
-const sel = computed(() => (KEYS.includes(props.section || '') && !['lora', 'ref'].includes(props.section!) ? props.section! : 'h3'))
+// H3 is optional: no section asked for - the first video model that has its files (H3, LTX 2.5, LTX 2.3, WAN), else H3's card
+const VIDEO = ['h3', 'ltx25', 'ltx23', 'wan5b']
+const firstInstalled = computed(() => { const s = snap.value?.sections; return (s && VIDEO.find((k) => s[k]?.gb && s[k].ok)) || 'h3' })
+const sel = computed(() => (KEYS.includes(props.section || '') && !['lora', 'ref'].includes(props.section!) ? props.section! : firstInstalled.value))
 // H3's row counts Ref2VA and the H3 LoRA with it (they are its parts on the card)
-const rowGb = (k: string) => { const s = snap.value!.sections; return k === 'h3' ? (s.h3.gb || 0) + (s.ref.gb || 0) + (s.lora.gb || 0) : s[k].gb }
-const rowOk = (k: string) => { const s = snap.value!.sections; return k === 'h3' ? s.h3.ok && s.ref.ok : s[k].ok }
+const rowGb = (k: string) => { const s = snap.value!.sections; if (k === 'cloud') return 0; return k === 'h3' ? (s.h3.gb || 0) + (s.ref.gb || 0) + (s.lora.gb || 0) : s[k].gb }
+// on the cloud disk Ref2VA is a set of its own (often not deployed): the H3 row is whole with H3's files, Ref2VA shows inside
+const rowOk = (k: string) => { const s = snap.value!.sections; if (k === 'cloud') return true; return k === 'h3' ? s.h3.ok && (s.ref.ok || !!snap.value!.cloud_files) : s[k].ok }
+// a video model with no file at all is «не установлена · добавить» (not red: it is not broken, it was never added); half there stays red
+const rowAbsent = (k: string) => { const s = snap.value!.sections; return VIDEO.includes(k) && !s[k]?.gb && !(k === 'h3' && (s.ref.gb || s.lora.gb)) }
 const sec = computed(() => snap.value?.sections[sel.value])
+// the «Где работают модели» row: the mode, and in the cloud the server, what it does and its price
+const whereIcon = computed(() => (snap.value?.where?.mode === 'cloud' ? 'cloud' : snap.value?.where?.mode === 'server' ? 'link' : 'film'))
+const whereLine = computed(() => {
+  const w = snap.value?.where || {}
+  if (w.mode === 'server') return w.host || ''
+  if (w.mode !== 'cloud') return t('cloud.navLocal')
+  if (!w.gpu || w.status === 'none') return t('cloud.navNoServer')
+  const st = t(w.status === 'deploying' ? 'cloud.deploying' : `cloud.pod.${w.status || 'unknown'}`)
+  return `${w.gpu} · ${st}${w.status === 'running' && w.price ? ` · $${Number(w.price).toFixed(2)}/${t('cloud.hour')}` : ''}`
+})
 const gbs = (v: number | null | undefined) => (v == null ? '—' : `${gb(v)} ${t('common.gb')}`)
 // the disk: one bar in three parts - the video models (Ref2VA and the H3 LoRA with them), the picture models, the writer
 const GROUP_COLOR: Record<string, string> = { video: 'var(--accent)', photo: '#ec4899', writer: '#1D9E75' }
@@ -122,6 +160,11 @@ const loraView = computed(() => {
 })
 
 async function load() { try { snap.value = await api('/api/models'); err.value = '' } catch (e) { err.value = (e as Error).message } }
+// MiniMax H3's licence statement: its sets download only after the tick (remembered in this browser; the server refuses without the flag)
+const H3_KEY = 'rv.h3Accepted'
+const h3Accepted = ref((() => { try { return localStorage.getItem(H3_KEY) === '1' } catch { return false } })())
+watch(h3Accepted, (v) => { try { localStorage.setItem(H3_KEY, v ? '1' : '') } catch { /* the tick is just not remembered */ } })
+const isH3Repo = (repo?: string) => repo === 'Comfy-Org/MiniMax-H3' || repo === 'MiniMaxAI/MiniMax-H3'
 async function call(path: string, body?: unknown) {
   try { snap.value = await post(path, body || {}); err.value = '' } catch (e) { err.value = (e as Error).message }
 }
@@ -131,7 +174,6 @@ async function pickPath(kind: string, start?: string) {
   try { return (await post('/api/models/pick', { kind: kind === 'folder' ? 'folder' : 'file', start })).path as string | null }
   catch (e) { banner((e as Error).message); return null }
 }
-const lines = (v: string) => v.split('\n').map((x) => x.trim()).filter(Boolean)
 async function addFolder(key: string, list: string[]) {
   const got = await pickPath('folder', list[list.length - 1])
   if (got && !list.some((x) => x.toLowerCase() === got.toLowerCase())) setting({ [key]: [...list, got] })
@@ -217,58 +259,67 @@ function row(f: Record<string, any>) {
         <nav class="m-nav" :aria-label="t('models.sections')">
           <!-- a group of one model is that model's row (the writer, the tools); a group of several gets a quiet title with its size -->
           <template v-for="[g, items] in GROUPS" :key="g">
-            <div v-if="g !== 'common'" class="m-group"><span>{{ t(`models.group.${g}`) }}</span><small>{{ groupGb(g) ? gbs(groupGb(g)) : '' }}</small></div>
+            <div v-if="g === 'where'" class="m-group"><span>{{ t('cloud.nav') }}</span></div>
+            <div v-else-if="g !== 'common'" class="m-group"><span>{{ t(`models.group.${g}`) }}</span><small>{{ groupGb(g) ? gbs(groupGb(g)) : '' }}</small></div>
             <hr v-else class="m-rule">
             <template v-for="[k, nm] in items" :key="k">
               <router-link :to="`/models/${k}`" :class="{ on: k === sel, plain: g === 'common' }">
-                <span>{{ k === 'llm' ? llmName : secName(k, nm) }}<small v-if="k === 'krea' || k === 'flux2'" class="sub-t">{{ t(`models.sub.${k}`) }}</small></span>
-                <small class="m-size" :class="{ bad: !rowOk(k) }" :title="rowOk(k) ? t('models.allThere') : t('models.missing')">{{ rowOk(k) ? (rowGb(k) ? gbs(rowGb(k)) : '') : t('models.noFiles') }}</small></router-link>
+                <span v-if="k === 'cloud'" class="m-where"><Icon :name="whereIcon" :size="15" /><span>{{ t(`cloud.navSub.${snap.engine_mode || 'local'}`) }}<template v-if="snap.where?.provider"> · {{ snap.where.provider }}</template>
+                  <small class="sub-t">{{ whereLine }}</small></span></span>
+                <span v-else>{{ k === 'llm' ? llmName : secName(k, nm) }}<small v-if="k === 'krea' || k === 'flux2'" class="sub-t">{{ t(`models.sub.${k}`) }}</small></span>
+                <small class="m-size" :class="{ bad: !rowOk(k) && !rowAbsent(k) }" :title="rowOk(k) ? t('models.allThere') : t('models.missing')">{{ rowOk(k) ? (rowGb(k) ? gbs(rowGb(k)) : '') : rowAbsent(k) ? t('models.notInstalled') : t(snap!.cloud_files ? 'models.noFilesCloud' : 'models.noFiles') }}</small></router-link>
             </template>
           </template>
         </nav>
         <section class="m-card">
+          <CloudPanel v-if="sel === 'cloud'" />
+          <template v-else>
           <!-- the head: the model, its state, what it is for -->
           <template v-if="sel === 'h3'">
-            <div class="m-title"><h2>{{ t('models.sec.h3') }}</h2><span class="pill-state" :class="{ on: snap.engine.state === 'ready' }">{{ snap.engine.state === 'ready' ? t('models.inMemory') : snap.engine.state === 'starting' ? t('models.starting') : t('models.unloaded') }}</span>
+            <div class="m-title"><h2>{{ t('models.sec.h3') }}</h2><span v-if="runs" class="m-runs" :title="runs.title"><Icon :name="runs.icon" :size="14" />{{ runs.text }}</span><span class="pill-state" :class="{ on: snap.engine.state === 'ready' }">{{ snap.engine.state === 'ready' ? t('models.inMemory') : snap.engine.state === 'starting' ? t('models.starting') : t('models.unloaded') }}</span>
               <button v-if="snap.engine.state === 'ready'" type="button" class="btn" :title="t('models.unloadTitle')" @click="engFree">{{ t('models.unload') }}</button></div>
-            <p class="muted">{{ snap.engine.own ? t('models.ownEngine') : t('models.desktopEngine') }}</p>
+            <p class="muted">{{ snap.cloud_files ? t('models.cloudEngine') : snap.engine.own ? t('models.ownEngine') : t('models.desktopEngine') }}</p>
           </template>
           <template v-else-if="sec.card">
-            <div class="m-title"><h2>{{ sec.title }}</h2><span class="pill-state" :class="{ on: snap.engine.state === 'ready' }">{{ snap.engine.state === 'ready' ? t('models.workerOn') : t('models.unloaded') }}</span>
+            <div class="m-title"><h2>{{ sec.title }}</h2><span v-if="runs" class="m-runs" :title="runs.title"><Icon :name="runs.icon" :size="14" />{{ runs.text }}</span><span class="pill-state" :class="{ on: snap.engine.state === 'ready' }">{{ snap.engine.state === 'ready' ? t('models.workerOn') : t('models.unloaded') }}</span>
               <button v-if="snap.engine.state === 'ready'" type="button" class="btn" :title="t('models.unloadTitle1')" @click="engFree">{{ t('models.unload') }}</button></div>
             <p class="muted">{{ sec.card.text }} {{ t('models.sameWorker') }}</p>
           </template>
           <template v-else-if="sel === 'krea'">
-            <div class="m-title"><h2>{{ t('models.sec.krea') }}</h2><span class="pill-state" :class="{ on: snap.engine.state === 'ready' }">{{ snap.engine.state === 'ready' ? t('models.workerOn') : t('models.unloaded') }}</span></div>
+            <div class="m-title"><h2>{{ t('models.sec.krea') }}</h2><span v-if="runs" class="m-runs" :title="runs.title"><Icon :name="runs.icon" :size="14" />{{ runs.text }}</span><span class="pill-state" :class="{ on: snap.engine.state === 'ready' }">{{ snap.engine.state === 'ready' ? t('models.workerOn') : t('models.unloaded') }}</span></div>
             <p class="muted">{{ t('models.kreaText') }}</p>
             <div v-if="sec.problem" class="warn-line"><Icon name="warn" :size="14" />{{ sec.problem }}</div>
           </template>
           <template v-else-if="sel === 'flux2'">
-            <div class="m-title"><h2>{{ t('models.sec.flux2') }}</h2><span class="pill-state" :class="{ on: snap.engine.state === 'ready' }">{{ snap.engine.state === 'ready' ? t('models.workerOn') : t('models.unloaded') }}</span></div>
+            <div class="m-title"><h2>{{ t('models.sec.flux2') }}</h2><span v-if="runs" class="m-runs" :title="runs.title"><Icon :name="runs.icon" :size="14" />{{ runs.text }}</span><span class="pill-state" :class="{ on: snap.engine.state === 'ready' }">{{ snap.engine.state === 'ready' ? t('models.workerOn') : t('models.unloaded') }}</span></div>
             <p class="muted">{{ t('models.fluxText') }}</p>
             <div v-if="sec.problem" class="warn-line"><Icon name="warn" :size="14" />{{ sec.problem }}</div>
           </template>
           <template v-else-if="sel === 'llm'">
-            <div class="m-title"><h2>{{ t('models.sec.llm') }}</h2><span v-if="!sec.server_ok" class="warn-line"><Icon name="warn" :size="14" />{{ t('models.noServer', { v: sec.server }) }}</span></div>
-            <p class="muted">{{ t('models.llmText') }}</p>
+            <div class="m-title"><h2>{{ t('models.sec.llm') }}</h2><span v-if="runs" class="m-runs" :title="runs.title"><Icon :name="runs.icon" :size="14" />{{ runs.text }}</span><span v-if="!sec.server_ok" class="warn-line"><Icon name="warn" :size="14" />{{ t('models.noServer', { v: sec.server }) }}</span></div>
+            <p class="muted">{{ snap.cloud_files ? t('models.llmCloud') : t('models.llmText') }}</p>
           </template>
           <template v-else-if="sel === 'tools'">
             <div class="m-title"><h2>{{ t('models.sec.tools') }}</h2></div>
             <p class="muted">{{ t('models.toolsText') }}</p>
           </template>
           <!-- what the model is: always in sight, above the tabs -->
-          <dl v-if="specs.length" class="m-specs">
-            <div v-for="s in specs" :key="s.l"><dt>{{ s.l }}<small v-if="s.n">{{ s.n }}</small></dt><dd>{{ s.v }}</dd></div>
-          </dl>
-          <ul v-if="caps.length" class="m-caps" :aria-label="t('models.canDo')">
-            <li v-for="c in caps" :key="c.x" :class="{ off: c.off }">{{ c.x }}</li>
-          </ul>
-          <p v-if="license" class="m-lic"><span>{{ t('models.license') }}</span>{{ license }}</p>
+          <div v-if="specs.length || caps.length || license" class="m-plate">
+            <dl v-if="specs.length" class="m-specs">
+              <div v-for="s in specs" :key="s.l"><dt>{{ s.l }}<small v-if="s.n">{{ s.n }}</small></dt><dd>{{ s.v }}</dd></div>
+            </dl>
+            <div v-if="caps.length || license" class="m-plate-foot">
+              <ul v-if="caps.length" class="m-caps" :aria-label="t('models.canDo')">
+                <li v-for="c in caps" :key="c.x" :class="{ off: c.off }"><Icon :name="c.icon" :size="14" />{{ c.x }}</li>
+              </ul>
+              <p v-if="license" class="m-lic" :class="{ region: sel === 'h3' || sel === 'ref' }" :title="license"><Icon :name="sel === 'h3' || sel === 'ref' ? 'warn' : 'note'" :size="13" />{{ license }}<template v-if="sel === 'h3' || sel === 'ref'"> · <a href="https://huggingface.co/MiniMaxAI/MiniMax-H3" target="_blank" rel="noopener">{{ t('models.h3Link') }}</a></template></p>
+            </div>
+          </div>
 
           <div v-if="TABS.length > 1" class="m-tabs" role="tablist" :aria-label="t('models.parts')" @keydown="tabKey">
             <button v-for="k in TABS" :key="k" type="button" role="tab" :data-tab="k" :aria-selected="k === tab" :tabindex="k === tab ? 0 : -1"
               :class="{ on: k === tab }" @click="openTab(k)">{{ t(`models.tab.${k}`) }}
-              <i v-if="tabMark(k).bad" class="m-dot bad" :title="t('models.missing')" /><small v-else-if="tabMark(k).n">{{ tabMark(k).n }}</small></button>
+              <i v-if="tabMark(k).bad" class="m-dot" :class="snap.cloud_files ? 'away' : 'bad'" :title="snap.cloud_files ? t('models.noFilesCloud') : t('models.missing')" /><small v-else-if="tabMark(k).n">{{ tabMark(k).n }}</small></button>
           </div>
 
           <!-- a path row: every tool -->
@@ -291,13 +342,17 @@ function row(f: Record<string, any>) {
             <div class="w-acts"><button type="button" class="btn" @click="pick(sg.path)">{{ t('models.choose') }}</button>
               <button v-if="sg.path.own" type="button" class="ghost" :title="t('models.asEnvTitle')" @click="setting({ [sg.path.key]: '' })">{{ t('models.asEnv') }}</button>
               <button type="button" class="ghost" :title="t('common.openFolder')" :aria-label="t('common.openFolder')" @click="open(sg.path.path)"><Icon name="folder" /></button></div></div>
+          <p v-if="cloudSnap && sg.id === 'weights'" class="muted">{{ cloudNote }}</p>
+          <div v-if="(sel === 'h3' || sel === 'ref') && sg.slots.some((s: any) => !s.ok)" class="m-h3lic">
+            <p class="muted">{{ t('models.h3Licence') }} <a href="https://huggingface.co/MiniMaxAI/MiniMax-H3" target="_blank" rel="noopener">{{ t('models.h3Link') }}</a></p>
+            <label class="check-row"><input v-model="h3Accepted" type="checkbox"><span>{{ t('models.h3Accept') }}</span></label></div>
           <div v-for="slot in sg.slots" :key="slot.key" class="slot">
-            <div class="slot-head"><i class="m-dot" :class="slot.ok ? 'ok' : 'bad'" /><b>{{ slot.title }}</b><span class="muted slot-text">{{ slot.ok ? slot.text : t('models.fileMissing') }}</span></div>
+            <div class="slot-head"><i class="m-dot" :class="slot.ok ? 'ok' : 'bad'" /><b>{{ slot.title }}</b><span class="muted slot-text">{{ slot.ok ? slot.text : t(cloudSnap ? 'models.fileMissingCloud' : 'models.fileMissing') }}</span></div>
             <p v-if="!slot.ok" class="muted">{{ slot.text }}</p>
             <template v-for="f in [...mainFiles(slot), ...(spareOpen[slot.key] ? spareFiles(slot) : [])]" :key="f.name + f.folder">
             <div class="w-row" :class="{ sel: f.selected, spare: !f.selected && slot.ok }">
               <div class="w-main"><b>{{ f.name }}</b>
-                <span class="w-meta">{{ gbs(f.gb) }} · {{ f.installed ? f.folder : t('models.willGoTo', { f: f.folder }) }}
+                <span class="w-meta">{{ gbs(f.gb) }} · {{ f.cloud ? (f.installed ? t('models.inCloudAt', { f: f.path }) : t('models.notInCloud')) : f.installed ? f.folder : t('models.willGoTo', { f: f.folder }) }}
                   <template v-if="f.repo"> · <a :href="f.url" target="_blank" rel="noopener">{{ f.repo }}</a></template><template v-else> · {{ t('models.ownFile') }}</template></span>
                 <template v-if="row(f).running"><span class="bar big"><i :style="{ width: `${row(f).pct}%` }" /></span>
                   <span class="w-meta">{{ t('models.ofGb', { a: gb(row(f).d.done / 2 ** 30), b: row(f).d.total ? gb(row(f).d.total / 2 ** 30) : '?' }) }}, {{ row(f).pct }}%{{ row(f).d.speed ? ' · ' + t('models.mbs', { v: gb(row(f).d.speed / 2 ** 20) }) : '' }}</span></template>
@@ -305,16 +360,19 @@ function row(f: Record<string, any>) {
                 <span v-if="row(f).d && row(f).d.status === 'failed'" class="warn-line"><Icon name="warn" :size="14" />{{ row(f).d.error || t('models.failed') }}</span></div>
               <div class="w-acts">
                 <template v-if="f.installed">
+                  <span v-if="f.cloud" class="badge" :title="t('models.inCloudTitle')">{{ t('models.inCloud') }}</span>
                   <span v-if="f.selected" class="badge accent">{{ t('models.inUse') }}</span>
                   <template v-else><button type="button" class="btn" @click="setting({ [slot.key]: f.name })">{{ t('models.use') }}</button>
-                    <template v-if="askDel === f.path"><span class="m-ask">{{ t('models.askDel', { v: gbs(f.gb) }) }}</span>
+                    <template v-if="f.cloud" />
+                    <template v-else-if="askDel === f.path"><span class="m-ask">{{ t('models.askDel', { v: gbs(f.gb) }) }}</span>
                       <button type="button" class="btn danger" @click="askDel = null; call('/api/models/delete', { path: f.path })">{{ t('models.remove') }}</button><button type="button" class="btn" @click="askDel = null">{{ t('models.keep') }}</button></template>
                     <button v-else type="button" class="ghost" :title="t('models.toBin')" @click="askDel = f.path"><Icon name="trash" /></button></template>
                 </template>
+                <span v-else-if="f.cloud" class="muted">{{ t('models.notInCloud') }}</span>
                 <button v-else-if="row(f).running" type="button" class="btn" @click="call('/api/models/download/cancel')">{{ t('common.stop') }}</button>
-                <button v-else-if="f.repo" type="button" class="btn" :disabled="row(f).busy" :title="row(f).busy ? t('models.oneAtATime') : undefined"
-                  @click="call('/api/models/download', { repo: f.repo, path: f.src, slot: slot.key }).then(schedule)">{{ row(f).again ? t('models.resume') : t('common.download') }}</button>
-                <button type="button" class="ghost" :title="t('common.openFolder')" :aria-label="t('common.openFolder')" @click="open(f.installed ? f.path : f.folder)"><Icon name="folder" /></button></div></div>
+                <button v-else-if="f.repo" type="button" class="btn" :disabled="row(f).busy || (isH3Repo(f.repo) && !h3Accepted)" :title="row(f).busy ? t('models.oneAtATime') : isH3Repo(f.repo) && !h3Accepted ? t('models.h3Accept') : undefined"
+                  @click="call('/api/models/download', { repo: f.repo, path: f.src, slot: slot.key, accept_h3: isH3Repo(f.repo) && h3Accepted }).then(schedule)">{{ row(f).again ? t('models.resume') : t('common.download') }}</button>
+                <button v-if="!f.cloud" type="button" class="ghost" :title="t('common.openFolder')" :aria-label="t('common.openFolder')" @click="open(f.installed ? f.path : f.folder)"><Icon name="folder" /></button></div></div>
             </template>
             <button v-if="spareFiles(slot).length" type="button" class="m-more" :aria-expanded="!!spareOpen[slot.key]" @click="spareOpen[slot.key] = !spareOpen[slot.key]">
               <Icon :name="spareOpen[slot.key] ? 'minus' : 'plus'" :size="14" />{{ spareOpen[slot.key] ? t('models.spareHide') : t('models.spare', { n: spareFiles(slot).length }) }}</button>
@@ -322,11 +380,11 @@ function row(f: Record<string, any>) {
           <!-- H3's weight roots and the Hugging Face token live with its weights -->
           <details v-if="sg.id === 'weights' && sel === 'h3'" class="m-fold">
             <summary>{{ t('models.whereFrom') }}</summary>
-            <label class="stack"><span class="lbl">{{ t('models.rootsLbl') }} <small>{{ t('models.onePerLine') }}</small></span>
-              <textarea class="field-in mono" :rows="Math.max(2, snap.roots.length + 1)" spellcheck="false" :value="snap.roots.join('\n')" @change="setting({ H3_MODEL_ROOTS: lines(val($event)) })" /></label>
-            <div class="row-inline"><button type="button" class="btn" @click="addFolder('H3_MODEL_ROOTS', snap.roots)">{{ t('models.addFolder') }}</button></div>
+            <span class="lbl">{{ t('models.rootsLbl') }}</span>
+            <FolderList :rows="snap.roots.map((d: string) => ({ dir: d }))" :label="t('models.rootsLbl')"
+              @save="(l) => setting({ H3_MODEL_ROOTS: l })" @add="addFolder('H3_MODEL_ROOTS', snap.roots)" @open="open" />
             <div class="stack token"><span class="lbl">{{ t('models.token') }} <small>{{ t('models.tokenSub') }}</small></span>
-              <div class="row-inline"><input v-model="hfToken" class="field-in" type="password" :placeholder="snap.token ? t('models.tokenSaved') : 'hf_…'" autocomplete="off">
+              <div class="row-inline"><input v-model="hfToken" class="field-in" type="password" :aria-label="t('models.token')" :placeholder="snap.token ? t('models.tokenSaved') : 'hf_…'" autocomplete="off">
                 <button type="button" class="btn" @click="call('/api/models/token', { token: hfToken || null })">{{ t('common.save') }}</button>
                 <button v-if="snap.token" type="button" class="ghost" @click="call('/api/models/token', { token: null })">{{ t('models.remove') }}</button></div></div>
           </details>
@@ -339,14 +397,13 @@ function row(f: Record<string, any>) {
                   <span class="w-meta">{{ gbs(m.gb) }} · {{ m.source }}<template v-if="m.vision"> · <span class="llm-tag ok">{{ t('models.seesPhotos') }}</span></template></span></span>
                 <span class="w-acts"><input type="radio" name="llmDefault" :checked="m.default" :aria-label="t('models.byDefault')" @change="llmDefault(m.name)"></span></label>
               <div class="stack"><span class="lbl">{{ t('models.ggufLbl') }} <small>{{ t('models.into', { v: sec.dest || '' }) }}</small></span>
-                <div class="row-inline"><input v-model="ggufUrl" class="field-in" :placeholder="t('models.ggufPh')">
+                <div class="row-inline"><input v-model="ggufUrl" class="field-in" :aria-label="t('models.ggufLbl')" :placeholder="t('models.ggufPh')">
                   <button type="button" class="btn" :disabled="!!snap.downloading" @click="call('/api/models/download-url', { url: ggufUrl }).then(schedule)">{{ t('common.download') }}</button></div>
                 <span v-if="snap.downloading && snap.downloading.folder === sec.dest" class="w-meta">{{ snap.downloading.name }}: {{ t('models.ofGb', { a: gb(snap.downloading.done / 2 ** 30), b: snap.downloading.total ? gb(snap.downloading.total / 2 ** 30) : '?' }) }}</span></div>
               <details class="m-fold">
                 <summary>{{ t('models.llmDirs') }} · {{ sec.dirs.length }}</summary>
-                <label class="stack"><span class="lbl">{{ t('models.onePerLine') }}</span>
-                  <textarea class="field-in mono" :rows="Math.max(2, sec.dirs.length + 1)" spellcheck="false" :value="sec.dirs.join('\n')" @change="setting({ LLM_DIRS: lines(val($event)) })" /></label>
-                <div class="row-inline"><button type="button" class="btn" @click="addFolder('LLM_DIRS', sec.dirs)">{{ t('models.addFolder') }}</button></div>
+                <FolderList :rows="sec.dirs.map((d: string) => ({ dir: d }))" :label="t('models.llmDirs')"
+                  @save="(l) => setting({ LLM_DIRS: l })" @add="addFolder('LLM_DIRS', sec.dirs)" @open="open" />
               </details>
             </div>
             <div v-if="tab === 'params'" class="m-sec" role="tabpanel">
@@ -363,7 +420,7 @@ function row(f: Record<string, any>) {
             <p class="muted">{{ t('models.paramsText') }}</p>
             <div class="m-params">
               <label v-for="p in sec.params" :key="p.key"><span class="lbl">{{ p.title }}</span>
-                <span class="row-inline"><input class="field-in" type="number" :min="p.min" :max="p.max" :step="p.step" :value="p.value" @change="setParam(p, val($event))">
+                <span class="row-inline"><input class="field-in" type="number" :aria-label="p.name || p.key" :min="p.min" :max="p.max" :step="p.step" :value="p.value" @change="setParam(p, val($event))">
                   <button v-if="p.own" type="button" class="ghost" :title="t('models.paramDefault', { v: fmt(p.default) })" @click="setting({ [p.key]: '' })">{{ t('models.reset') }}</button></span>
                 <span class="muted small p-text">{{ p.text }}</span></label>
             </div>
@@ -372,6 +429,11 @@ function row(f: Record<string, any>) {
           <!-- LoRA: what lies in the model's folders, each with the strength it takes when added; the folders folded below -->
           <div v-if="tab === 'lora' && loraView" class="m-sec" role="tabpanel">
             <input v-if="loraView.loras.length > 6" v-model="loraFind" class="field-in" type="search" :placeholder="t('models.loraFind', { n: loraView.loras.length })" :aria-label="t('models.loraFind', { n: loraView.loras.length })">
+            <div v-if="snap?.cloud_files" class="lo-cloud">
+              <p><Icon name="cloud" :size="15" />{{ t('models.loraCloud') }}</p>
+              <div v-if="snap.cloud_files.loras?.length" class="lo-cloud-list"><span class="muted">{{ t('models.loraOnCloud', { n: snap.cloud_files.loras.length }) }}</span>
+                <span v-for="n in snap.cloud_files.loras" :key="n" class="lo-chip" :title="n">{{ n.replace(/\.safetensors$/, '') }}</span></div>
+            </div>
             <ul v-if="shownLoras.length" class="lo-list" :class="{ 'no-pic': !loraPics }">
               <li class="lo-head" aria-hidden="true"><span>{{ t('models.loraCol') }}</span><span :title="t('models.strengthText')">{{ t('models.strengthCol') }}</span></li>
               <li v-for="l in shownLoras" :key="l.id" class="lo-row" :class="{ bad: l.verdict === 'blocked' }">
@@ -392,16 +454,14 @@ function row(f: Record<string, any>) {
             </ul>
             <p v-else-if="loraView.loras.length" class="muted">{{ t('models.loraNone', { v: loraFind }) }}</p>
             <p v-else class="muted">{{ t('models.loraEmpty', { name: sel === 'krea' ? 'Krea' : sec.title }) }}</p>
-            <details class="m-fold" :open="!loraView.loras.length">
+            <details class="m-fold" :open="!loraView.loras.length && !snap?.cloud_files">
               <summary>{{ loraView.label }} · {{ loraView.dirs.length }}</summary>
               <p class="muted">{{ sel === 'h3' ? t('models.loraText') : t('models.loraPut') }}</p>
-              <div v-for="d in loraView.dirs" :key="d.dir" class="w-row"><span class="w-main"><b>{{ d.dir }}</b><span class="w-meta">{{ d.exists ? t('models.filesGb', { n: d.count, v: gbs(d.gb) }) : t('models.noFolder') }}</span></span>
-                <span class="w-acts"><button type="button" class="ghost" @click="open(d.dir)">{{ t('common.open') }}</button></span></div>
-              <label class="stack"><span class="lbl">{{ t('models.onePerLine') }}</span>
-                <textarea class="field-in mono" :rows="Math.max(2, loraView.dirs.length + 1)" spellcheck="false" :value="loraView.dirs.map((d: any) => d.dir).join('\n')" @change="setting({ [loraView!.key]: lines(val($event)) })" /></label>
-              <div class="row-inline"><button type="button" class="btn" @click="addFolder(loraView!.key, loraView!.dirs.map((d: any) => d.dir))">{{ t('models.addFolder') }}</button></div>
+              <FolderList :rows="loraView.dirs.map((d: any) => ({ dir: d.dir, missing: !d.exists, meta: d.exists ? t('models.filesGb', { n: d.count, v: gbs(d.gb) }) : t('models.noFolder') }))"
+                :label="loraView.label" @save="(l) => setting({ [loraView!.key]: l })" @add="addFolder(loraView!.key, loraView!.dirs.map((d: any) => d.dir))" @open="open" />
             </details>
           </div>
+          </template>
         </section>
       </div>
     </template>

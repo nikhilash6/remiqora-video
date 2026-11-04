@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('remiqoraVideo', {
   context: () => ipcRenderer.invoke('setup:context'),
   checks: () => ipcRenderer.invoke('setup:checks'),
   setSets: (sets) => ipcRenderer.invoke('setup:set-sets', sets),
+  acceptH3: (value) => ipcRenderer.invoke('setup:accept-h3', value),
   setLang: (lang) => ipcRenderer.invoke('setup:set-lang', lang),
   chooseFolder: (kind) => ipcRenderer.invoke('setup:choose-folder', kind),
   setFolder: (kind, dir) => ipcRenderer.invoke('setup:set-folder', kind, dir),

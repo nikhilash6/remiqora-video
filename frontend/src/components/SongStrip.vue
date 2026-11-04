@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Phase 11: a song as a clip sees it - its loudness, its parts (quiet or loud, the chorus found from the repeated
 // lines), the sung lines, and the stretch the clip takes. On the home screen a click on it moves the stretch (to the
-// nearest bar); on the storyboard it shows the scenes' cuts on the bars, the selected scene lit. `head` - where the
+// nearest bar), its edges drag to make it shorter or longer («range»: start, seconds); on the storyboard it shows the scenes' cuts on the bars, the selected scene lit. `head` - where the
 // song is playing now (a line over the wave); while it plays, a click inside the stretch seeks there («seek»).
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -10,7 +10,7 @@ import { mmss } from '../lib/format'
 
 const { t } = useI18n()
 const props = defineProps<{ song: Song; from?: number; to?: number; cuts?: number[]; sel?: number; editable?: boolean; zoom?: boolean; head?: number | null }>()
-const emit = defineEmits<{ pick: [t: number]; seek: [t: number]; scene: [i: number] }>()
+const emit = defineEmits<{ pick: [t: number]; seek: [t: number]; scene: [i: number]; range: [from: number, seconds: number] }>()
 const box = ref<HTMLElement | null>(null)
 const cv = ref<HTMLCanvasElement | null>(null)
 const W = ref(600)
@@ -58,13 +58,38 @@ onMounted(() => {
 onUnmounted(() => ro?.disconnect())
 watch(() => [props.song.id, props.from, props.to, props.zoom, W.value], draw)
 
+const MIN_S = 4   // the shortest stretch (the clip's own minimum)
+const timeAt = (clientX: number) => {
+  const r = box.value!.getBoundingClientRect()
+  return v0.value + ((clientX - r.left) / r.width) * (v1.value - v0.value)
+}
+const nearBar = (t: number) => props.song.bars.reduce((best, b) => (Math.abs(b - t) < Math.abs(best - t) ? b : best), props.song.bars[0] ?? 0)
+
+// an edge of the stretch dragged: it snaps to the nearest bar, the other edge stays
+let dragged = false
+function grab(e: PointerEvent, edge: 'from' | 'to') {
+  if (!props.editable || props.from == null) return
+  e.preventDefault(); e.stopPropagation()
+  const el = e.currentTarget as HTMLElement
+  el.setPointerCapture(e.pointerId)
+  const end = props.to ?? props.song.duration
+  dragged = false
+  const move = (ev: PointerEvent) => {
+    dragged = true
+    const t = Math.max(0, Math.min(props.song.duration, nearBar(timeAt(ev.clientX))))
+    if (edge === 'from') { const a = Math.min(t, end - MIN_S); emit('range', Math.max(0, a), end - Math.max(0, a)) }
+    else { const b = Math.max(t, props.from! + MIN_S); emit('range', props.from!, Math.min(props.song.duration, b) - props.from!) }
+  }
+  const up = () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up) }
+  el.addEventListener('pointermove', move); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up)
+}
+
 function click(e: MouseEvent) {
   if (!props.editable || !box.value) return
-  const r = box.value.getBoundingClientRect()
-  const t = v0.value + ((e.clientX - r.left) / r.width) * (v1.value - v0.value)
+  if (dragged) { dragged = false; return }   // the click that ends an edge's drag
+  const t = timeAt(e.clientX)
   if (props.head != null && props.from != null && t >= props.from && t <= (props.to ?? props.song.duration)) { emit('seek', t); return }
-  const bar = props.song.bars.reduce((best, b) => (Math.abs(b - t) < Math.abs(best - t) ? b : best), props.song.bars[0] ?? 0)
-  emit('pick', bar)
+  emit('pick', nearBar(t))
 }
 </script>
 
@@ -76,7 +101,10 @@ function click(e: MouseEvent) {
         <span v-for="(c, i) in chorus" :key="'c' + i" class="ss-chorus" :style="{ left: c.l + 'px', width: c.w + 'px' }" />
       </div>
       <canvas ref="cv" />
-      <span v-if="from != null && !zoom" class="ss-pick" :style="{ left: x(from) + 'px', width: x(to ?? song.duration) - x(from) + 'px' }" />
+      <span v-if="from != null && !zoom" class="ss-pick" :style="{ left: x(from) + 'px', width: x(to ?? song.duration) - x(from) + 'px' }">
+        <template v-if="editable">
+          <i class="ss-edge l" :title="t('idea.clip.edgeTitle')" @pointerdown="grab($event, 'from')" @click.stop />
+          <i class="ss-edge r" :title="t('idea.clip.edgeTitle')" @pointerdown="grab($event, 'to')" @click.stop /></template></span>
       <i v-if="head != null" class="ss-head" :style="{ left: x(head) + 'px' }" />
       <button v-for="c in cutsX" :key="c.i" type="button" class="ss-cut" :class="{ sel: c.i === sel }" :style="{ left: c.l + 'px', width: c.w + 'px' }"
         :aria-label="t('idea.sceneN', { n: c.i + 1 })" @click.stop="emit('scene', c.i)" />

@@ -67,6 +67,10 @@
   }
 
   const pending = () => ctx.plan.filter((c) => !c.done);
+  // H3's license does not cover some countries: its own tick, also when adding sets later, remembered between runs
+  // (H3 itself and Ref2VA: the downloader refuses any set under that license without the tick, also when H3 is already on disk)
+  const h3Needed = () => ctx.picked.some((id) => ctx.sets[id].license.startsWith('MiniMax H3') && !ctx.sets[id].complete);
+  const h3Ok = () => !h3Needed() || !!ctx.h3Accepted;
   const diskOk = () => !checkResult || checkResult.items.filter((i) => i.id === 'disk').every((i) => i.ok);
   const gatedToFetch = () => ctx.picked.filter((id) => ctx.sets[id].gated && !ctx.sets[id].complete);
   const hfReady = () => gatedToFetch().length === 0 || !!(hf && hf.ok && gatedToFetch().every((id) => hf.checked.includes(id)));
@@ -153,7 +157,7 @@
   function showPick() {
     const toFetch = pending().reduce((a, c) => a + c.weight, 0);
     const nothing = pending().length === 0;
-    const canStart = diskOk() && hfReady() && accepted && !nothing;
+    const canStart = diskOk() && hfReady() && accepted && h3Ok() && !nothing;
     const title = t(adding ? 'add.title' : 'check.title');
     render(`
       <h1>${esc(title)}</h1>
@@ -169,6 +173,7 @@
       ${adding ? '' : findBlock()}
       ${adding ? '' : folderBlock()}
       ${adding ? '' : `<label class="accept"><input type="checkbox" id="accept"${accepted ? ' checked' : ''}> <span>${esc(t('license.accept'))}</span></label>`}
+      ${h3Needed() ? `<p class="note">${esc(t('license.h3'))}</p><label class="accept h3accept"><input type="checkbox" id="accept-h3"${ctx.h3Accepted ? ' checked' : ''}> <span>${esc(t('license.h3.accept'))} <button type="button" class="btn link" data-open="license-h3">${esc(t('license.h3.link'))}</button></span></label>` : ''}
       <p class="note">${esc(t('license.region'))}</p>
       <p class="note">${esc(nothing ? t('pick.nothing') : t(adding ? 'add.note' : 'check.note', { size: fmtBytes(toFetch) }))}</p>
       ${diskOk() ? '' : `<p class="note bad" role="alert">${esc(t('pick.noDisk'))}</p>`}
@@ -190,7 +195,9 @@
       token.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); onHf(); } });
     }
     const accept = $('#accept');
-    if (accept) accept.addEventListener('change', () => { accepted = accept.checked; $('#start').disabled = !(diskOk() && hfReady() && accepted && pending().length); });
+    if (accept) accept.addEventListener('change', () => { accepted = accept.checked; $('#start').disabled = !(diskOk() && hfReady() && accepted && h3Ok() && pending().length); });
+    const acceptH3 = $('#accept-h3');
+    if (acceptH3) acceptH3.addEventListener('change', async () => { await api.acceptH3(acceptH3.checked); ctx.h3Accepted = acceptH3.checked; $('#start').disabled = !(diskOk() && hfReady() && accepted && h3Ok() && pending().length); });
     $('.pickbox').addEventListener('change', onPick);
   }
 

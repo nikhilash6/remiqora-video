@@ -15,10 +15,10 @@ from typing import Any, Awaitable, Callable, Optional
 
 from . import config, timings
 from .engine import graphs
-from .engine.comfy import COMFY, EngineError, output_files
+from .engine.comfy import COMFY, EngineError, Interrupted, output_files
 from .llm import client as llm
 from . import loras as lora_lib
-from . import i18n
+from . import console, i18n
 
 
 
@@ -141,7 +141,7 @@ async def _ref_models(job: Job) -> None:
     if not (config.H3_REF_DIR / "diffusion_models" / config.H3_REF_UNET).exists():
         raise EngineError(i18n.L(f"Нет модели Ref2VA: {config.H3_REF_DIR}\\diffusion_models\\{config.H3_REF_UNET} («Модели и настройки» или H3_REF_DIR в .env)", f"No Ref2VA model: {config.H3_REF_DIR}\\diffusion_models\\{config.H3_REF_UNET} («Models and settings» or H3_REF_DIR in .env)"))
     # the worker is told every folder at its start: missing means not there
-    raise EngineError(i18n.L(f"Воркер H3 не видит {config.H3_REF_UNET} или {config.H3_REF_LORA} в {config.H3_REF_DIR}", f"The H3 worker can't see {config.H3_REF_UNET} or {config.H3_REF_LORA} in {config.H3_REF_DIR}"))
+    raise EngineError(i18n.L(f"Видео-воркер не видит {config.H3_REF_UNET} или {config.H3_REF_LORA} в {config.H3_REF_DIR}", f"The video worker can't see {config.H3_REF_UNET} or {config.H3_REF_LORA} in {config.H3_REF_DIR}"))
 
 
 async def engine(job: Job, model: str, loras: list[dict], ref: bool = False) -> list[tuple[str, float]]:
@@ -150,7 +150,7 @@ async def engine(job: Job, model: str, loras: list[dict], ref: bool = False) -> 
     as ComfyUI names them. A scene (shoot) and «Видео → видео» (v2v.py) start their graphs after this."""
     from . import videomodels
     card = videomodels.card(model)
-    if card.id != "h3" and (missing := videomodels.weights_missing(card)):
+    if (missing := videomodels.weights_missing(card)):
         raise EngineError(i18n.L(f"{card.name}: нет файлов " + ", ".join(missing) + " («Модели и настройки»)", f"{card.name}: missing files " + ", ".join(missing) + " («Models and settings»)"))
     await llm.SERVER.stop()   # normally already down: a writer job stops it after itself
     await COMFY.ensure()
@@ -163,10 +163,32 @@ async def engine(job: Job, model: str, loras: list[dict], ref: bool = False) -> 
         if COMFY.warm:
             job.phase = "loading"
             await COMFY.free()   # another model is in memory: out with it first
+            if _worker_bloated():
+                job.phase = "starting"   # what free() left still fills the RAM: a fresh process instead
+                await COMFY.stop()
+                await COMFY.ensure()
         COMFY.model = card.id
     if ref:
         await _ref_models(job)
     return await comfy_loras(job, loras)
+
+
+WORKER_RAM_SHARE = 0.5   # a local worker holding more of the RAM than this after free() is restarted on a model swap
+
+
+def _worker_bloated() -> bool:
+    """The local worker still holds most of the RAM after unloading: loading the next model's 10+ GB beside it is
+    where torch died with an access violation (2026-11-04)."""
+    if config.ENGINE == "remote" or not COMFY.pid:
+        return False
+    from . import sysinfo
+    held, ram = sysinfo.process_ram(COMFY.stats_pid), sysinfo.ram()
+    return bool(held and ram and held > ram["total"] * WORKER_RAM_SHARE)
+
+
+def _worker_died() -> bool:
+    """The local worker's process is gone (a crash, not a scene's error): a retry starts it again."""
+    return config.ENGINE != "remote" and COMFY.proc is not None and COMFY.pid is None
 
 
 def scene_graph(model: str, prompt: str, width: int, height: int, length: int, seed: int, prefix: str,
@@ -204,15 +226,20 @@ async def shoot(job: Job, prompt: str, width: int, height: int, length: int, see
     phase_of = graphs.phase_of if h3 else other_graphs.phase_of
     samplers = (graphs.SAMPLE,) if h3 else other_graphs.SAMPLERS
     done_before = {"n": 0}   # LTX: the second stage's steps go on from the first's
+    # until the sampler reports its first step the worker is mostly loading weights: ComfyUI loads a model when a node
+    # first needs it (the cloud's first scene: ~3 min from the network volume), and a 24 GB card swaps the text
+    # encoder and the model every scene. A warm local card does not wait there, so it keeps its phases.
+    swaps = {"on": config.ENGINE == "remote" or not COMFY.warm, "sampled": False}
 
     def on_node(node: str) -> None:
         if ph := phase_of(node):
-            job.phase = ph
+            job.phase = "loading" if swaps["on"] and not swaps["sampled"] and ph in ("encoding", "sampling") else ph
         if node == "sample2":
             done_before["n"] = len(other_graphs.LTX_SIGMAS_1.split(",")) - 1
 
     def on_progress(value: int, maximum: int, node: str) -> None:
         if node in samplers:
+            swaps["sampled"] = True
             job.phase, job.step = "sampling", done_before["n"] + value
             job.steps = maximum if h3 or videomodels.family(card) == "wan5b" else card.steps
 
@@ -227,7 +254,23 @@ async def shoot(job: Job, prompt: str, width: int, height: int, length: int, see
     t0, cold = time.time(), not COMFY.warm
     job.phase = "loading"
     graph = scene_graph(card.id, prompt, width, height, length, seed, prefix, names, first_frame, ref_images, track, track_start, idv, last_frame)
-    files = output_files(await COMFY.run(graph, on_node, on_progress))
+    try:
+        files = output_files(await COMFY.run(graph, on_node, on_progress))
+    except Interrupted:
+        raise
+    except EngineError as e:
+        # out of video memory after several scenes (a 24 GB cloud card, 2026-11-01: the 5th scene of a run): the
+        # memory is fragmented or a model stayed in - everything out and the same scene once more
+        if "out of memory" in str(e).lower():
+            job.phase = "loading"
+            await COMFY.free()
+        # the local worker died (2026-11-04, four times in a night: an access violation in torch reading the LTX 2.3
+        # text encoder into a worker that held 40+ GB of RAM): run() starts a fresh one, the same scene once more
+        elif not _worker_died():
+            raise
+        else:
+            job.phase = "starting"
+        files = output_files(await COMFY.run(graph, on_node, on_progress))
     mp4 = next((f for f in files if f.endswith(".mp4")), None)
     if not mp4:
         raise EngineError(i18n.L("ComfyUI закончил без mp4", "ComfyUI finished without an mp4"))
@@ -258,6 +301,7 @@ async def _run_scene(job: Job) -> None:
         await COMFY.interrupt()
         job.status, job.phase = "cancelled", "done"
     except Exception as e:  # noqa: BLE001 - shown in the UI
+        console.trace(f"job {job.id} {job.kind}")   # the full traceback into data/studio.log; the console gets one line
         job.status, job.phase, job.error = "error", "done", str(e)
     finally:
         job.finished = time.time()
@@ -265,15 +309,17 @@ async def _run_scene(job: Job) -> None:
 
 async def _run_task(job: Job) -> None:
     fn = _tasks.pop(job.id)
+    llm.think_into(job.progress)   # its writer calls stream their thinking into job.progress["thinking"]
     try:
-        job.phase = "starting" if job.kind in ("render", "graph", "take") else "llm"
+        job.phase = "starting" if job.kind in ("render", "graph", "take", "autopilot") else "llm"
         job.result = await fn(job)
         job.status, job.phase = "done", "done"
     except asyncio.CancelledError:
-        if job.kind in ("render", "graph", "take"):
+        if job.kind in ("render", "graph", "take", "autopilot"):
             await COMFY.interrupt()
         job.status, job.phase = "cancelled", "done"
     except Exception as e:  # noqa: BLE001 - shown in the UI
+        console.trace(f"job {job.id} {job.kind}")   # the full traceback into data/studio.log; the console gets one line
         job.status, job.phase, job.error = "error", "done", str(e)
     finally:
         job.finished = time.time()

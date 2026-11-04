@@ -24,7 +24,9 @@ const W = computed(() => Math.max(end.value * ED.px + 160, 600))
 const x = (t: number) => t * ED.px
 const url = (f: string | null) => fileUrl(f)
 const track = computed(() => ED.view?.track || null)
-const musicEnd = computed(() => (track.value ? Math.min(ED.duration, Math.max(0, (track.value.duration || 0) - (track.value.offset || 0))) : 0))
+// a graph's song «по тактам» after an intro of your own starts this late in the video (`delay`)
+const musicAt = computed(() => Math.max(0, track.value?.delay || 0))
+const musicEnd = computed(() => (track.value ? Math.min(ED.duration - musicAt.value, Math.max(0, (track.value.duration || 0) - (track.value.offset || 0))) : 0))
 
 // the ruler's marks: a step that keeps them ~70 px apart
 const step = computed(() => [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300].find((s) => s * ED.px >= 70) || 600)
@@ -243,8 +245,9 @@ function soundDown(e: PointerEvent, s: Sound) {
       <div class="et-row et-music" :class="{ empty: !track }">
         <div class="et-head"><Icon name="music" :size="14" />{{ t('edit.music') }}</div>
         <div class="et-lane" @pointerdown="seek">
-          <div v-if="track" class="et-mus" :class="{ sel: ED.sel === 'music' }" :style="{ left: '0px', width: `${Math.max(20, x(musicEnd))}px` }"
-            :title="t('edit.trackFrom', { name: track.name, s: dec(track.offset || 0) })" @pointerdown.stop="ED.sel = 'music'">
+          <div v-if="track" class="et-mus" :class="{ sel: ED.sel === 'music' }" :style="{ left: `${x(musicAt)}px`, width: `${Math.max(20, x(musicEnd))}px` }"
+            :title="track.node ? t('edit.graphSongTitle', { name: track.name, s: dec(track.offset || 0) }) : t('edit.trackFrom', { name: track.name, s: dec(track.offset || 0) })"
+            @pointerdown.stop="ED.sel = 'music'">
             <WaveBars :pid="pid" :file="track.file" :from="track.offset || 0" :to="(track.offset || 0) + musicEnd" :width="Math.max(20, x(musicEnd))" :height="28" color="rgba(234,179,8,.6)" />
             <span class="et-fade in" :style="{ width: `${x(track.fade_in || 0)}px` }" />
             <span class="et-fade out" :style="{ width: `${x(Math.min(musicEnd, track.fade_out || 0))}px` }" />

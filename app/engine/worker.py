@@ -56,6 +56,29 @@ def _log_tail(n: int = 25) -> str:
         return ""
 
 
+LOW_RAM_GB, LOW_RAM_SHARE = 8.0, 0.15   # free physical RAM under max(this, this share of it) counts as low
+
+
+def low_ram() -> str:
+    """A line for the crash message when the computer is short of free RAM, else "": loading a checkpoint into too
+    little of it is where torch died with an access violation (2026-11-04, another worker held 40+ GB)."""
+    from .. import sysinfo
+    r = sysinfo.ram()
+    if not r:
+        return ""
+    free = round(r["total"] - r["used"], 1)
+    if free >= max(LOW_RAM_GB, r["total"] * LOW_RAM_SHARE):
+        return ""
+    return i18n.L(f"Мало свободной памяти ({free:g} ГБ из {r['total']:g}): закройте другие программы или вторую студию и повторите.\n",
+                  f"Little free memory ({free:g} GB of {r['total']:g}): close other programs or a second studio and try again.\n")
+
+
+def crashed() -> str:
+    """The message of a worker that died: the low-RAM hint when it applies, before the end of its log."""
+    return (i18n.L("Видео-воркер упал. ", "The video worker crashed. ") + low_ram()
+            + i18n.L("Конец журнала data\\h3worker.log:\n", "The end of data\\h3worker.log:\n") + _log_tail())
+
+
 class Worker:
     def __init__(self) -> None:
         self.proc: Optional[subprocess.Popen] = None
@@ -107,21 +130,21 @@ class Worker:
 
     def _send(self, msg: dict) -> None:
         if not self.pid:
-            raise EngineError(i18n.L("Воркер H3 не запущен", "The H3 worker is not running"))
+            raise EngineError(i18n.L("Видео-воркер не запущен", "The video worker is not running"))
         try:
             self.proc.stdin.write(json.dumps(msg, ensure_ascii=False) + "\n")
             self.proc.stdin.flush()
         except OSError as e:
-            raise EngineError(i18n.L("Воркер H3 упал. Конец журнала data\\h3worker.log:\n", "The H3 worker crashed. The end of data\\h3worker.log:\n") + _log_tail()) from e
+            raise EngineError(crashed()) from e
 
     async def _next(self, timeout: Optional[float] = None) -> dict:
         try:
             msg = await asyncio.wait_for(self._events.get(), timeout)
         except asyncio.TimeoutError as e:
-            raise EngineError(i18n.L("Воркер H3 не ответил. Конец журнала data\\h3worker.log:\n", "The H3 worker did not answer. The end of data\\h3worker.log:\n") + _log_tail()) from e
+            raise EngineError(i18n.L("Видео-воркер не ответил. Конец журнала data\\h3worker.log:\n", "The video worker did not answer. The end of data\\h3worker.log:\n") + _log_tail()) from e
         if msg.get("event") == "exit":
             self.started_at, self.warm = None, False
-            raise EngineError(i18n.L("Воркер H3 упал. Конец журнала data\\h3worker.log:\n", "The H3 worker crashed. The end of data\\h3worker.log:\n") + _log_tail())
+            raise EngineError(crashed())
         return msg
 
     # ----- start / stop -----
@@ -225,4 +248,4 @@ class Worker:
                 elif ev == "interrupted":
                     raise Interrupted(i18n.L("остановлено", "stopped"))
                 elif ev == "error":
-                    raise EngineError(_worker_message(msg.get("message")) or i18n.L("ошибка воркера H3", "H3 worker error"))
+                    raise EngineError(_worker_message(msg.get("message")) or i18n.L("ошибка видео-воркера", "video worker error"))

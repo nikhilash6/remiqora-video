@@ -15,22 +15,33 @@ from __future__ import annotations
 import random
 import re
 import uuid
+from typing import Optional
 
-from . import jobs, picture, projects, render
+from . import jobs, looks, picture, projects, render
 from .engine.comfy import EngineError
-from .planner import check
+from .planner import check, prompts
 from . import i18n
 
 
-def who_of(c: dict) -> str:
+def who_of(c: dict, plan: Optional[dict] = None) -> str:
     """Who the portrait shows, said outright: Krea follows a look's anatomy («lean build, high cheekbones») to a man's
-    face whatever the «woman» in it (2026-10-29, three heroines in a row), and the user wants feminine, beautiful women."""
+    face whatever the «woman» in it (2026-10-29, three heroines in a row). A plan written since rules_v 2 (2026-11-03):
+    the gender and age only - nothing about beauty, the cast's look decides."""
+    if prompts.is_nonperson(c):   # `kind` comes from a rules_v 4 writer or from the user in the hero card; the look starts with the species
+        return f"one {prompts.kind_of(c)}"
     young = int(c.get("age") or 30) < 36
+    if plan and int(plan.get("rules_v") or 0) >= 2:
+        who = {"female": "woman", "male": "man"}.get(c.get("gender", ""))
+        return f"one {'young ' if young else ''}{who}" if who else "one person"
     if c.get("gender") == "female":
         return f"one beautiful {'young ' if young else ''}woman with a soft, delicate, clearly feminine face"
     if c.get("gender") == "male":
         return f"one handsome {'young ' if young else ''}man with a clearly masculine face"
     return "one person"
+
+
+LIGHT_OF = {"animal": "Soft natural light, sharp focus on the eyes.", "creature": "Soft natural light, sharp focus on the eyes.",
+            "robot": "Soft even light, sharp focus on the details."}
 
 
 def prompt_of(plan: dict, i: int) -> str:
@@ -40,13 +51,20 @@ def prompt_of(plan: dict, i: int) -> str:
     place = next((s.get("place_en") for s in plan.get("scenes") or [] if s.get("place_en") and (i + 1) in (s.get("who") or [1])), "")
     style = (plan.get("style_en") or "").strip().rstrip(".")
     outfit = re.sub(r"^\s*(wearing|dressed in)\s+", "", (c.get("outfit_en") or "").strip(), flags=re.I).rstrip(".")
+    # «Вид»: the portrait's framing and medium (a live look: waist-up, «Photo of a real woman, natural skin texture»);
+    # an older plan keeps «A medium close-up photo of»
+    kind = prompts.kind_of(c)
+    opening, anchor = looks.portrait(plan, who_of(c, plan), "" if kind != "person" else c.get("gender", ""), kind)
+    ending = (f"{LIGHT_OF[kind]} Only this one {kind} in the picture. No text, no watermark." if kind != "person" else
+              "Natural light on the face, sharp focus on the eyes, neutral expression. Only this one person in the picture. "
+              "No text, no watermark.")
     return " ".join(x for x in (
         f"{style}." if style else "",
-        f"A medium close-up photo of {who_of(c)}, facing the camera: {c.get('en', '').strip().rstrip('.')}.",
+        f"{opening}, facing the camera: {c.get('en', '').strip().rstrip('.')}.",
+        anchor,
         f"Wearing {outfit}." if outfit else "",
         f"Behind them: {place.strip().rstrip('.')}." if place else "",
-        "Natural light on the face, sharp focus on the eyes, neutral expression. Only this one person in the picture. "
-        "No text, no watermark.") if x)
+        ending) if x)
 
 
 # the features a try changes («Поправить черты»): (ru, en) - en goes into the tries' prompt and, approved, after the look;
@@ -61,10 +79,19 @@ TWEAKS = {
     "smile": ("улыбается", "A warm, gentle smile."),
     "makeup": ("ярче макияж", "Bolder makeup."),
     "softer": ("мягче черты лица", "Softer, more delicate facial features."),
+    "bigger": ("крупнее", "Looks a little bigger."),
+    "smaller": ("меньше", "Looks a little smaller."),
+    "fluffier": ("пушистее", "A fluffier, thicker coat."),
+    "coat": ("светлее окрас", "A lighter coat colour."),
+    "newer": ("новее", "Looks new, clean and polished."),
+    "worn": ("потрёпаннее", "Looks worn, scratched and weathered."),
+    "glow": ("ярче подсветка", "Brighter glowing lights."),
     "warm": ("теплее свет", "Warm golden light."),
     "studio": ("студийный свет", "Soft, even studio light."),
 }
 LIGHT = {"warm", "studio"}
+CHANGE_SYSTEM_NONPERSON = """You turn a user's short change to a character's look (an animal, a robot or a creature) into one short English
+sentence for an image model: concrete visual words about the character only (fur, colours, shape, materials, lights, size), no names, no feelings."""
 CHANGE_SYSTEM = """You turn a user's short change to a person's look into one short English sentence for an image model:
 concrete visual words about the person only (hair, face, makeup, body, clothes), no names, no feelings."""
 
@@ -87,8 +114,11 @@ def _set_photo(p: dict, i: int, name: str) -> None:
             writer.clip_shot(p, s, s.get("shot"))
 
 
-def faces_on(path) -> int:
-    """How many confident faces the detector finds on a picture (-1: it could not tell)."""
+def faces_on(path, c: Optional[dict] = None) -> int:
+    """How many confident faces the detector finds on a picture (-1: it could not tell; always for a hero that is not a
+    person - an animal or a robot has no face to find, and no fault is shown for it)."""
+    if prompts.is_nonperson(c):
+        return -1
     try:
         import cv2
         from . import checks
@@ -96,6 +126,38 @@ def faces_on(path) -> int:
         return len(checks._confident_faces(img)) if img is not None else -1
     except Exception:  # noqa: BLE001 - a check is a bonus, never a blocker
         return -1
+
+
+def one_face(pid: str, i: int, name: str) -> dict | None:
+    """Try `name` of character i cut to its biggest face: the whole height, a 4:5 width around the face - Krea at the
+    video's 16:9 draws a «character sheet» at times (a close-up and the whole figure, 2026-11-02: three tries in a
+    row), and a portrait with two faces puts her twice into the frames. The cut is a try of its own when exactly one
+    face is left on it. -> the try, or None."""
+    try:
+        import cv2
+        from . import checks
+        folder = projects.folder(pid)
+        img = cv2.imread(str(folder / name))
+        faces = checks._confident_faces(img) if img is not None else []
+        if not faces:
+            return None
+        h, w = img.shape[:2]
+        x, _, fw, _ = max(faces, key=lambda f: f[2] * f[3])[:4]
+        side = min(w, round(h * 0.8))
+        x0 = int(max(0, min(w - side, x + fw / 2 - side / 2)))
+        cut = img[:, x0:x0 + side]
+        if len(checks._confident_faces(cut)) != 1:
+            return None
+        out = f"cast_{uuid.uuid4().hex[:8]}.png"
+        cv2.imwrite(str(folder / out), cut)
+    except Exception:  # noqa: BLE001 - the try as it is, then
+        return None
+    cur = projects.load(pid)
+    t = next((x for x in cur["plan"]["cast"][i].get("tries") or [] if x["file"] == name), {})
+    new = {"file": out, "seed": t.get("seed"), "faces": 1, "cut_of": name}
+    cur["plan"]["cast"][i].setdefault("tries", []).append(new)
+    projects.save(cur)
+    return new
 
 
 async def tries(job: jobs.Job, pid: str, i: int, n: int = 4, tweak: str | None = None) -> dict:
@@ -127,7 +189,7 @@ async def tries(job: jobs.Job, pid: str, i: int, n: int = 4, tweak: str | None =
             (folder / name).unlink(missing_ok=True)
             return cur
         c = cur["plan"]["cast"][i]
-        c.setdefault("tries", []).append({"file": name, "seed": seed, "faces": faces_on(folder / name), **({"tweak": tweak} if tweak else {})})
+        c.setdefault("tries", []).append({"file": name, "seed": seed, "faces": faces_on(folder / name, c), **({"tweak": tweak} if tweak else {})})
         proj = projects.save(cur)
     return proj
 
@@ -186,7 +248,7 @@ async def adjust(job: jobs.Job, pid: str, i: int, keys: list[str], text: str = "
         llm.use_lang(i18n.plan_lang_name(plan))
         schema = {"type": "object", "properties": {"en": {"type": "string"}}, "required": ["en"], "additionalProperties": False}
         async with llm.session(plan.get("model")) as cl:
-            d = await cl.chat_json(CHANGE_SYSTEM, f"The change ({llm.lang()}): {text.strip()}", schema, temperature=0.2, seed=1, max_tokens=200)
+            d = await cl.chat_json(CHANGE_SYSTEM_NONPERSON if prompts.is_nonperson(plan["cast"][i]) else CHANGE_SYSTEM, f"The change ({llm.lang()}): {text.strip()}", schema, temperature=0.2, seed=1, max_tokens=200, step="cast")
         text_en = str(d.get("en", "")).strip()
     change = " ".join([TWEAKS[k][1] for k in keys] + ([text_en] if text_en else []))
     flux = picture.edit_problem() is None
@@ -199,19 +261,54 @@ async def adjust(job: jobs.Job, pid: str, i: int, keys: list[str], text: str = "
         job.progress["stage"] = "drawing"
         job.progress["message"] = i18n.L(f"проба {k + 1} из {n}", f"try {k + 1} of {n}")
         if flux:
-            await picture.edit(job, "The same person as in the first image: exactly the same face, identity and skin tone, the same "
+            same = ("The same person as in the first image: exactly the same face, identity and skin tone" if not prompts.is_nonperson(plan["cast"][i])
+                    else f"The same {prompts.kind_of(plan['cast'][i])} as in the first image: exactly the same {prompts.KIND_KEEP[prompts.kind_of(plan['cast'][i])]}")
+            await picture.edit(job, same + ", the same "
                                f"framing, pose and background. Change only this: {change} Photorealistic portrait, sharp focus on the eyes. "
                                "No text, no watermark.", [src], seed, w, h, folder / name, picture.project_loras(proj["settings"], "flux2"))
         else:
-            prompt = prompt_of(plan, i).replace(" Natural light", f" {change} Natural light", 1)
+            prompt = prompt_of(plan, i).replace(" Natural light", f" {change} Natural light", 1).replace(" Soft natural light", f" {change} Soft natural light", 1).replace(" Soft even light", f" {change} Soft even light", 1)
             await picture.generate(job, prompt, seed, w, h, folder / name, picture.project_loras(proj["settings"], "krea"))
         cur = projects.load(pid)
         if i >= len(cur["plan"].get("cast") or []):   # the hero was removed meanwhile
             (folder / name).unlink(missing_ok=True)
             return cur
         cur["plan"]["cast"][i].setdefault("tries", []).append(
-            {"file": name, "seed": seed, "faces": faces_on(folder / name), "tweaks": keys, "edit": flux,
+            {"file": name, "seed": seed, "faces": faces_on(folder / name, cur["plan"]["cast"][i]), "tweaks": keys, "edit": flux,
              **({"change_ru": text.strip(), "change_en": text_en} if text_en else {})})
+        proj = projects.save(cur)
+    return proj
+
+
+async def photo_tries(job: jobs.Job, pid: str, i: int, n: int = 3) -> dict:
+    """Tries of character i from their own photo (from_photo): FLUX.2 Klein draws the same person anew as the casting's
+    portrait - the look, the outfit, the video's style, the place of their first scene - each try with how close its
+    face is to the photo (SFace, `sim`), so «Песня → клип» (autopilot.py) approves the likest. -> the project."""
+    proj = projects.load(pid)
+    plan = proj.get("plan") or {}
+    if not 0 <= i < len(plan.get("cast") or []):
+        raise EngineError(i18n.L("Нет такого героя", "No such hero"))
+    src = portrait_path(proj, i)
+    if not src:
+        raise EngineError(i18n.L("Сначала нужен портрет героя", "The hero needs a portrait first"))
+    prompt = ("The same person as in the first image: exactly the same face, identity, skin tone and hair. A new photograph "
+              "of them with another camera position and framing; do not copy the background. " + prompt_of(plan, i))
+    w, h = render.picture_size(proj["settings"])
+    folder = projects.folder(pid)
+    from . import frames
+    for k in range(n):
+        seed = random.randrange(1, 2**31 - 1)
+        name = f"cast_{uuid.uuid4().hex[:8]}.png"
+        job.progress["stage"] = "drawing"
+        job.progress["message"] = i18n.L(f"проба {k + 1} из {n}", f"try {k + 1} of {n}")
+        await picture.edit(job, prompt, [src], seed, w, h, folder / name, picture.project_loras(proj["settings"], "flux2"))
+        sim = frames.similarity(folder / name, src)
+        cur = projects.load(pid)
+        if i >= len(cur["plan"].get("cast") or []):   # the hero was removed meanwhile
+            (folder / name).unlink(missing_ok=True)
+            return cur
+        cur["plan"]["cast"][i].setdefault("tries", []).append(
+            {"file": name, "seed": seed, "faces": faces_on(folder / name, cur["plan"]["cast"][i]), "edit": True, "sim": None if sim is None else round(sim, 3)})
         proj = projects.save(cur)
     return proj
 
@@ -242,7 +339,7 @@ def faces(proj: dict, i: int) -> list[dict]:
     from . import frames
     p = proj["plan"]
     c = p["cast"][i]
-    if not c.get("photo"):
+    if not c.get("photo") or prompts.is_nonperson(c):   # no face to compare on an animal, a robot or a creature
         return []
     folder = projects.folder(proj["id"])
     photo = folder / c["photo"]
@@ -254,8 +351,8 @@ def faces(proj: dict, i: int) -> list[dict]:
     several = p.get("mode") == "several"
     out = []
     for s in p["scenes"]:
-        if several and (i + 1) not in (s.get("who") or []):
-            continue
+        if several and (i + 1) not in (s.get("who") or []) or prompts.no_cast(p, s):
+            continue   # no_cast: a landscape or a stranger is not the hero's likeness
         png = by_id.get(render.sid(s)) if by_id else by_index.get(s["index"])
         if png and (folder / png).exists():
             sim = frames.similarity(folder / png, photo)

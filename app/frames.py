@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import checks, config, i18n, jobs, picture, places, projects, render
+from . import checks, config, i18n, jobs, looks, picture, places, projects, render
 from .engine.comfy import EngineError
 from .planner import check, prompts
 
@@ -34,6 +34,10 @@ ORDINALS = ("first", "second", "third")
 # judged). Its frame: facing the camera, singing, no wider than medium.
 SING_ACTION = ("{who} sings toward the camera, mouth open mid-word, eyes open, {pos} face turned to the camera; "
                "{pos} hands are empty and relaxed below {pos} shoulders, there is no microphone anywhere")
+# rules_v 3 (writer.RULES_V): «mouth open mid-word» drew a grimace on the stills; the lips only part, as on a soft word
+SING_CALM = ("{who} sings softly toward the camera, the lips slightly parted as on a word, a calm relaxed face, eyes open, {pos} face "
+             "turned to the camera; {pos} hands are empty and relaxed below {pos} shoulders, there is no microphone anywhere")
+SING_NONPERSON = "{who} faces the camera, moving in time with the music in its own way"
 # a frame whose face missed FRAME_FACE_MIN is tried again a step closer: the face bigger, drawn more like the photo
 CLOSER = {"wide": "medium", "medium": "close"}
 # Klein's first reference is the face cut out of the portrait (FACE_CROP times the face, FACE_PX square): the portrait
@@ -45,8 +49,14 @@ FACES = config.DATA_DIR / "cache" / "faces"
 
 def can_draw(plan: dict, s: dict) -> bool:
     """A new scene of a people video: with someone in the picture who has a photo (their face in the scene's place),
-    or with nobody in it at all - a clip's insert of the empty coat on the chair is drawn empty (empty())."""
-    if s.get("kind") != "new" or plan.get("mode") == "none" or prompts.is_raw(s):
+    or with nobody in it at all - a clip's insert of the empty coat on the chair is drawn empty (empty()). A look drawn
+    by every frame (looks.needs_frame): every new scene, a video without people and a scene whose people have no photo
+    too (Krea 2 from the words, _draw_words)."""
+    if s.get("kind") != "new" or prompts.is_raw(s):
+        return False
+    if looks.needs_frame(plan):
+        return True
+    if plan.get("mode") == "none":
         return False
     return empty(plan, s) or bool(frame_people(plan, s))
 
@@ -62,24 +72,37 @@ def frame_people(plan: dict, s: dict) -> list[int]:
 
 
 def empty(plan: dict, s: dict) -> bool:
-    """A scene drawn without people: the user said nobody (`frame_people` []), or its actions name nobody."""
+    """A scene drawn without people: the user said nobody (`frame_people` []), or its actions name nobody, or the hero
+    is not in it (prompts.no_cast: there is no one else's photo to draw)."""
+    if plan.get("mode") == "none":   # a video without people (drawn only by a needs_frame look)
+        return True
     pick = s.get("frame_people")
-    return pick == [] if isinstance(pick, list) else not prompts.has_people(s, plan)
+    return pick == [] if isinstance(pick, list) else prompts.no_cast(plan, s) or not prompts.has_people(s, plan)
 
 
-def empty_prompt(plan: dict, s: dict, place: bool) -> str:
+def medium(plan: dict, style: str) -> str:
+    """The frame's opening: the video's style and «Photorealistic film still»; a look drawn by every frame - its medium
+    said strongly instead (looks.frame_medium: «A watercolour painting on textured paper, not a photograph: ...»)."""
+    if m := looks.frame_medium(plan):
+        return f"{style}. {m}" if style else m
+    return f"{style}. Photorealistic film still." if style else "Photorealistic cinematic film still."
+
+
+def empty_prompt(plan: dict, s: dict, place: bool, nobody: bool = True) -> str:
     """The frame of a scene without people: the video's style, the place (its picture as the image when `place`), the
-    framing and the first action; nobody in it."""
+    framing and the first action; nobody in it. `nobody` False (a needs_frame look's scene whose people have no photo,
+    _draw_words): the first action as it is, people and all."""
     style = (plan.get("style_en") or "").strip().rstrip(".")
-    beats = [b.strip() for b in s.get("beats_en") or [] if b and b.strip()]
     framing = prompts.FRAMING.get(s.get("framing"), "Medium shot")
     set_ = places.of_scene(plan, s) if place else None
     where = (f"The location is the place in the image: the same architecture, materials, colors and light, seen from another spot "
              f"in it that suits this shot. Scene: {prompts._sentence(set_['en'])}" if set_ else prompts.place_line(plan, s))
+    beats = [b.strip() for b in s.get("beats_en") or [] if b and b.strip()]
+    action = _empty_action(plan, s) if nobody else (beats[0] if beats else "the place itself")
     return " ".join(x for x in (
-        f"{style}. Photorealistic film still." if style else "Photorealistic cinematic film still.",
-        where, f"{framing}: {prompts._sentence(_empty_action(plan, s))}",
-        "There are no people, no faces and no hands anywhere in this picture. No text, no watermark.") if x)
+        medium(plan, style), where, f"{framing}: {prompts._sentence(action)}",
+        "There are no people, no faces and no hands anywhere in this picture. No text, no watermark." if nobody
+        else "No text, no watermark.") if x)
 
 
 def _empty_action(plan: dict, s: dict) -> str:
@@ -120,9 +143,27 @@ def first_moment(plan: dict, s: dict, names: list[str], shot: Optional[str] = No
         # the one who sings in this frame (names[0] is the frame's first person), not the cast's first: a man singing
         # in «several» got «her face» when the heroine was cast 1
         who = (frame_people(plan, s) or [0])[0]
+        if int(plan.get("rules_v") or 0) >= 5 and who < len(cast) and prompts.is_nonperson(cast[who]):
+            # rules_v 5: a robot or an animal has no lips, face or hands to sing with - its own first beat (it «sings» with
+            # lights, a spin, a movement to the beat), facing the camera
+            return ("medium" if framing == "wide" else framing), (beats[0] if beats else SING_NONPERSON.format(who=names[0]))
         pos = {"female": "her", "male": "his"}.get((cast[who] if who < len(cast) else {}).get("gender"), "their")
-        return ("medium" if framing == "wide" else framing), SING_ACTION.format(who=names[0], pos=pos)
+        act = SING_CALM if int(plan.get("rules_v") or 0) >= 3 else SING_ACTION   # rules_v 3: no wide-open mouth
+        return ("medium" if framing == "wide" else framing), act.format(who=names[0], pos=pos)
     return framing, beats[0] if beats else None
+
+
+_PLURAL = {"person": "people", "animal": "animals", "robot": "robots", "creature": "creatures"}
+
+
+def _only(kinds: list[str]) -> str:
+    """«Only this one animal in the picture.» / «Only this person and this animal in the picture.» (rules_v 4): the kinds of
+    the people in the frame, in order."""
+    if len(set(kinds)) == 1:
+        k = kinds[0]
+        return f"Only this one {k} in the picture." if len(kinds) == 1 else f"Only these {len(kinds)} {_PLURAL[k]} in the picture."
+    parts = [f"this {k}" if kinds.count(k) == 1 else f"these {kinds.count(k)} {_PLURAL[k]}" for k in dict.fromkeys(kinds)]
+    return "Only " + " and ".join(parts) + " in the picture."
 
 
 def prompt_of(plan: dict, s: dict, names: list[str], place: bool = False, crop: bool = False,
@@ -142,19 +183,33 @@ def prompt_of(plan: dict, s: dict, names: list[str], place: bool = False, crop: 
     shot, action = first_moment(plan, s, names, shot)
     framing, action = FRAMES[shot], action or f"{names[0]} looks at the camera"
     only = "Only this one person in the picture." if len(names) == 1 else f"Only these {len(names)} people in the picture."
+    if any(prompts.kind_of(c) != "person" for c in plan.get("cast") or []):   # a hero may be an animal (cast `kind`): the kinds are counted apart
+        cast = plan.get("cast") or []
+        idx = frame_people(plan, s)[:len(names)]
+        kinds = [prompts.kind_of(cast[i]) for i in idx] if len(idx) == len(names) else ["person"] * len(names)
+        if any(k != "person" for k in kinds):
+            refs = " ".join(f"{who} is the {k} in the {ORDINALS[n]} image: exactly the same "
+                            f"{prompts.KIND_KEEP.get(k, 'face, hair and clothes')}." for n, (who, k) in enumerate(zip(names, kinds)))
+            only = _only(kinds)
     set_ = places.of_scene(plan, s) if place else None
     n = len(names) + (1 if crop and len(names) == 1 else 0)   # the images before the place's
     where = (f"The location is the place in the {ORDINALS[n] if n < 3 else 'fourth'} image: the same architecture, "
              f"materials, colors and light, seen from another spot in it that suits this shot. Scene: {prompts._sentence(set_['en'])}"
              if set_ else prompts.place_line(plan, s))
-    return " ".join(x for x in (
-        f"{style}. Photorealistic film still." if style else "Photorealistic cinematic film still.",
+    drawn = looks.needs_frame(plan)   # the look's medium, and a new picture in it - not «a new photograph»
+    text = " ".join(x for x in (
+        medium(plan, style),
         refs, wear,
-        "A new photograph with a different camera position and framing than the reference images; "
+        ("A new picture in this technique" if drawn else "A new photograph")
+        + " with a different camera position and framing than the reference images; "
         + ("do not copy the people's backgrounds." if place else "do not copy their backgrounds."),
         where,
         f"{framing}: {prompts._sentence(action)}",
         only, "No text, no watermark.") if x)
+    if plan.get("rules_v"):   # a plan written since 2026-11-03: its signs drawn as lights (model_prompts.no_signs)
+        from .planner.model_prompts import no_signs
+        text = no_signs(text)
+    return text
 
 
 def face_crop(photo: Path) -> Optional[Path]:
@@ -218,6 +273,8 @@ async def draw_one(job: jobs.Job, proj: dict, index: int, seed: Optional[int] = 
     if empty(plan, s):
         return await _draw_empty(job, proj, s, seed)
     who = people(proj, plan, s)
+    if not who and looks.needs_frame(plan):   # people without a photo: Krea 2 draws them from the words, in the look
+        return await _draw_empty(job, proj, s, seed, nobody=False)
     if not who:
         raise EngineError(i18n.L(f"Сцена {index + 1}: ни у кого в ней нет фото", f"Scene {index + 1}: nobody in it has a photo"))
     names, photos, outfits = [n for n, _, _ in who], [p for _, p, _ in who], [o for _, _, o in who]
@@ -263,22 +320,26 @@ async def draw_one(job: jobs.Job, proj: dict, index: int, seed: Optional[int] = 
                                  **({"closer": True} if closer else {})}}}
 
 
-async def _draw_empty(job: jobs.Job, proj: dict, s: dict, seed: Optional[int]) -> dict:
-    """A scene without people: FLUX.2 Klein in the place's picture when it has one, else Krea 2 from the words."""
+async def _draw_empty(job: jobs.Job, proj: dict, s: dict, seed: Optional[int], nobody: bool = True) -> dict:
+    """A scene without people: FLUX.2 Klein in the place's picture when it has one, else Krea 2 from the words.
+    `nobody` False: a needs_frame look's scene whose people have no photo - drawn with them, from the words."""
     plan = proj["plan"]
     where = place_photo(proj, s)
     w, h = render.picture_size(proj["settings"], render.scene_card(plan, proj["settings"], s))
     sd = seed if seed is not None else random.randrange(1, 2**31 - 1)
     dest = projects.folder(proj["id"]) / f"{PREFIX}{s['id']}_{sd}.png"
-    prompt = empty_prompt(plan, s, where is not None)
+    prompt = empty_prompt(plan, s, where is not None, nobody)
     if where:
         await picture.edit(job, prompt, [where], sd, w, h, dest, picture.project_loras(proj["settings"], "flux2"))
     else:
         await picture.generate(job, prompt, sd, w, h, dest, picture.project_loras(proj["settings"], "krea"))
     framing = prompts.FRAMING.get(s.get("framing"), "Medium shot")
+    beats = [b.strip() for b in s.get("beats_en") or [] if b and b.strip()]
+    action = _empty_action(plan, s) if nobody else (beats[0] if beats else "the place itself")
     return {"seed": sd, "similarity": None, "ok": True,
-            "update": {"start_photo": dest.name, "start_en": f"{framing}: {prompts._sentence(_empty_action(plan, s))}",
-                       "kind": "new", "frame": {"seed": sd, "face": None, "ok": True, "empty": True, **({"place": where.name} if where else {})}}}
+            "update": {"start_photo": dest.name, "start_en": f"{framing}: {prompts._sentence(action)}",
+                       "kind": "new", "frame": {"seed": sd, "face": None, "ok": True, **({"empty": True} if nobody else {"words": True}),
+                                                **({"place": where.name} if where else {})}}}
 
 
 def hold_chain(plan: dict, s: dict, was: Optional[str]) -> None:
@@ -346,5 +407,5 @@ async def draw_many(job: jobs.Job, pid: str, indices: Optional[list[int]] = None
 
 
 def estimate(n: int) -> float:
-    """Seconds for n frames: the model's start and ~5 s a frame (tools/probe_flux2: 4 s warm at 1344×768)."""
+    """Seconds for n frames: the model's start and ~5 s a frame (measured: 4 s warm at 1344×768)."""
     return 20 + 5 * n

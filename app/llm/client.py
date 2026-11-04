@@ -6,6 +6,10 @@ Models: every *.gguf under LLM_DIRS, sub-folders included. An mmproj file is the
 with a model from the same folder, or else by name ("gemma-4-E4B-it-mmproj-BF16" goes with "gemma-4-E4B-it-…-Q8_0").
 Answers: JSON constrained by a schema (`response_format: json_schema`), cached on disk by a hash of the whole request,
 so the same idea with the same seed gives the same storyboard at once.
+
+ENGINE=remote: the writer runs on the cloud server too (cloud/worker_server.py): its GGUFs are the server's (<models>/llm on
+the pod's volume), RemoteLlama starts and stops its llama-server there, and a call goes through /llm/call - the request
+runs on the server and the answer is fetched, so RunPod's proxy (100 s per request) never cuts a long answer.
 """
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ import os
 import re
 import socket
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -27,8 +32,9 @@ from pathlib import Path
 from typing import Optional
 
 from .. import config, i18n
-from ..engine import winjob
+from ..engine import remote, winjob
 from ..engine.comfy import COMFY
+from ..engine.errors import EngineError
 
 START_TIMEOUT = 180
 URL = f"http://127.0.0.1:{config.LLM_PORT}"
@@ -86,6 +92,7 @@ class LlmModel:
     size_gb: float
     mmproj: Optional[Path]     # None: the model can't see pictures
     source: str                # "LM Studio" or the folder
+    bytes: int = 0             # a cloud model's size (its path is the server's, relative to its models folder)
 
     def public(self) -> dict:
         return {"id": self.id, "name": self.name, "size_gb": self.size_gb, "vision": self.mmproj is not None,
@@ -100,7 +107,47 @@ def _key(stem: str) -> str:
     return re.sub(r"[-_.]+", "-", s).strip("-")
 
 
+def cloud() -> bool:
+    return config.ENGINE == "remote"
+
+
+def _manifest_llms(sets: list[str]) -> list[dict]:
+    """The writer's GGUFs a deployed server got from install/manifest.json (its «writer» set): the list before the
+    server ever answered."""
+    try:
+        m = json.loads((config.ROOT / "install" / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    files = [f for k in sets for f in m["sets"].get(k, {}).get("files", []) if f.get("kind") == "llm"]
+    projs = [f for f in files if "mmproj" in f["path"].lower()]
+    return [{"rel": f"llm/{f['path']}", "name": Path(f["path"]).stem, "bytes": f["bytes"],
+             "mmproj": f"llm/{projs[0]['path']}" if projs else None} for f in files if f not in projs]
+
+
+def cloud_models() -> list[LlmModel]:
+    """The server's GGUFs; a stopped server (RunPod's proxy says 404) gives the list it gave last time, kept in
+    data/cloud.json - a list is not worth starting a paid server for, the writer's job starts it (remote.WAKE)."""
+    from ..cloud import state
+    try:
+        ms = remote.http_json("GET", "/llm/models", timeout=15)["models"]
+        d = state.load()
+        if d.get("pod") and d["pod"].get("llm_models") != ms:
+            d["pod"]["llm_models"] = ms
+            state.save(d)
+    except (EngineError, KeyError, ValueError) as e:
+        d = state.load()
+        pod = d.get("pod") or {} if d["mode"] == "cloud" else {}
+        ms = pod.get("llm_models") or _manifest_llms(pod.get("sets") or [])
+        if not ms:
+            raise LLMError(i18n.L(f"Облачный сервер не дал список моделей сценариста: {e}", f"The cloud server did not list the writer's models: {e}")) from e
+    return [LlmModel(id=f"cloud/{m['rel']}", name=m["name"], path=Path(m["rel"]), size_gb=round(m["bytes"] / 2**30, 1),
+                     mmproj=Path(m["mmproj"]) if m.get("mmproj") else None, source=i18n.L("Облако", "Cloud"), bytes=m["bytes"])
+            for m in ms]
+
+
 def models() -> list[LlmModel]:
+    if cloud():
+        return cloud_models()
     found: list[tuple[int, Path, Path]] = []
     projs: list[Path] = []
     for i, root in enumerate(config.LLM_DIRS):
@@ -135,6 +182,10 @@ def find(model_id: Optional[str]) -> LlmModel:
         for m in ms:
             if m.id == model_id:
                 return m
+        # a project written on this machine names its local model: in the cloud the same file, else the default
+        same = next((m for m in ms if cloud() and m.path.name == Path(model_id).name), None)
+        if same or cloud():
+            return same or next((m for m in ms if config.LLM_MODEL.lower() in m.name.lower()), None) or ms[0]
         raise LLMError(i18n.L(f"Модель не найдена: {model_id}", f"Model not found: {model_id}"))
     want = config.LLM_MODEL.lower()
     return next((m for m in ms if want in m.name.lower()), None) or next((m for m in ms if m.mmproj), ms[0])
@@ -269,18 +320,282 @@ class LlamaServer:
         self._job = None
 
 
-SERVER = LlamaServer()
+class RemoteLlama:
+    """The writer's llama-server on the cloud server: the same start / stop / model as LlamaServer."""
+
+    def __init__(self) -> None:
+        self.model: Optional[LlmModel] = None
+
+    @property
+    def pid(self) -> Optional[int]:
+        return None   # no process here: the header's meters show none
+
+    async def start(self, m: LlmModel) -> None:
+        if self.model and self.model.path == m.path:
+            return
+        if remote.WAKE is not None:
+            await remote.WAKE(lambda s: None)
+        try:
+            await asyncio.to_thread(remote.http_json, "POST", "/llm/start", {"model": m.path.as_posix(), "ctx": config.LLM_CTX}, 300)
+        except EngineError as e:
+            raise LLMError(i18n.L(f"Сценарист в облаке не запустился: {e}", f"The writer did not start in the cloud: {e}")) from e
+        self.model = m
+
+    async def stop(self) -> None:
+        if self.model is None:
+            return
+        self.model = None
+        try:
+            await asyncio.to_thread(remote.http_json, "POST", "/llm/stop", {}, 60)
+        except EngineError:
+            pass
+
+
+class Writer:
+    """SERVER: this machine's llama-server or the cloud one, by the mode at each use (like engine.comfy.Engine)."""
+
+    def __init__(self) -> None:
+        self.local, self.remote = LlamaServer(), RemoteLlama()
+
+    def current(self):
+        return self.remote if cloud() else self.local
+
+    @property
+    def pid(self) -> Optional[int]:
+        return self.current().pid
+
+    @property
+    def model(self) -> Optional[LlmModel]:
+        return self.current().model
+
+    async def start(self, m: LlmModel) -> None:
+        await self.current().start(m)
+
+    async def stop(self) -> None:
+        await self.current().stop()
+
+
+SERVER = Writer()
 
 
 # ---------- asking ----------
 
+def _post_cloud(path: str, body: dict, timeout: float = 600) -> dict:
+    t0 = time.time()
+    try:
+        cid = remote.http_json("POST", "/llm/call", {"path": path, "body": body})["id"]
+        while time.time() - t0 < timeout:
+            r = remote.http_json("GET", f"/llm/call/{cid}", timeout=90)   # the server holds each ask up to 50 s
+            if r.get("done"):
+                if r.get("status") != 200:
+                    raise LLMError(f"llama-server {r.get('status')}: {str(r.get('body'))[:500]}")
+                return json.loads(r["body"])
+    except EngineError as e:
+        raise LLMError(str(e)) from e
+    raise LLMError(i18n.L("Сценарист в облаке не ответил", "The writer in the cloud did not answer"))
+
+
 def _post(path: str, body: dict, timeout: float = 600) -> dict:
+    if cloud():
+        return _post_cloud(path, body, timeout)
     req = urllib.request.Request(URL + path, json.dumps(body).encode(), {"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
         raise LLMError(f"llama-server {e.code}: {e.read().decode('utf-8', 'replace')[:500]}") from e
+
+
+# ---------- the writer's thinking, live ----------
+# A job's writer calls stream (`stream: true`): the model's reasoning (llama-server's `reasoning_content`, or a
+# <think> block left in the content) goes into job.progress["thinking"] a couple of times a second, the answer is
+# put together and parsed exactly as the plain call's. The request itself (and so the cache key) is the same.
+
+THINK: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar("llm_think", default=None)   # the job's progress
+THINK_TAIL = 4000      # characters of thinking a job keeps (and a cache entry beside its answer)
+THINK_EVERY = 0.5      # seconds between two updates of the progress
+
+
+def think_into(progress: Optional[dict]) -> None:
+    """The running job's progress dict: its writer calls stream their thinking into progress["thinking"]."""
+    THINK.set(progress)
+
+
+class _Split:
+    """Reasoning vs answer in a streamed reply: `reasoning_content` / `reasoning` deltas are thinking; a content that
+    opens with <think> is thinking up to </think> (a server that does not parse it out)."""
+    OPEN, CLOSE = "<think>", "</think>"
+
+    def __init__(self) -> None:
+        self.answer: list[str] = []
+        self.thought: list[str] = []
+        self._buf = ""
+        self._state = "start"   # start | think | answer
+
+    def content(self, piece: str) -> tuple[str, str]:
+        """-> (thinking, answer) of this piece of content."""
+        if self._state == "answer":
+            self.answer.append(piece)
+            return "", piece
+        self._buf += piece
+        if self._state == "start":
+            head = self._buf.lstrip()
+            if self.OPEN.startswith(head) and len(head) < len(self.OPEN):
+                return "", ""   # maybe the start of <think>: wait for more
+            if not head.startswith(self.OPEN):
+                self._state, rest, self._buf = "answer", self._buf, ""
+                self.answer.append(rest)
+                return "", rest
+            self._state, self._buf = "think", head[len(self.OPEN):]
+        # inside <think>: everything up to </think> is thinking (a tail that may be a cut </think> waits)
+        if (k := self._buf.find(self.CLOSE)) >= 0:
+            th, rest = self._buf[:k], self._buf[k + len(self.CLOSE):].lstrip()
+            self._state, self._buf = "answer", ""
+            self.thought.append(th)
+            if rest:
+                self.answer.append(rest)
+            return th, rest
+        keep = next((n for n in range(len(self.CLOSE) - 1, 0, -1) if self._buf.endswith(self.CLOSE[:n])), 0)
+        th, self._buf = (self._buf[:-keep], self._buf[-keep:]) if keep else (self._buf, "")
+        self.thought.append(th)
+        return th, ""
+
+    def finish(self) -> str:
+        if self._buf:   # a reply that ended inside <think> or on its first characters
+            (self.thought if self._state == "think" else self.answer).append(self._buf)
+            self._buf = ""
+        return "".join(self.answer)
+
+
+def _post_stream(path: str, body: dict, on_piece, timeout: float = 600) -> dict:
+    """_post with `stream: true`: on_piece(thinking, answer) for each delta; -> the reply in the plain call's shape."""
+    req = urllib.request.Request(URL + path, json.dumps({**body, "stream": True}).encode(),
+                                 {"Content-Type": "application/json", "Accept": "text/event-stream"})
+    sp, reasoning, finish = _Split(), [], None
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            for raw in r:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                ev = json.loads(data)
+                if ev.get("error"):
+                    raise LLMError(f"llama-server: {str(ev['error'])[:500]}")
+                ch = (ev.get("choices") or [{}])[0]
+                delta = ch.get("delta") or {}
+                th = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                if th:
+                    reasoning.append(th)
+                ans = ""
+                if delta.get("content"):
+                    th2, ans = sp.content(delta["content"])
+                    th += th2
+                if th or ans:
+                    on_piece(th, ans)
+                finish = ch.get("finish_reason") or finish
+    except urllib.error.HTTPError as e:
+        raise LLMError(f"llama-server {e.code}: {e.read().decode('utf-8', 'replace')[:500]}") from e
+    text = sp.finish()
+    return {"choices": [{"message": {"content": text, "reasoning_content": "".join(reasoning) + "".join(sp.thought)},
+                         "finish_reason": finish}]}
+
+
+class Thoughts:
+    """One job's thinking in its progress["thinking"]: {step, text (the last THINK_TAIL characters, the calls one
+    after another), live, secs (the thinking time of all its calls), calls, cached, node (the graph's node at work),
+    parts}. `parts`: the steps one after another, [{step, at, secs, calls, cached, live, node}] - `at` is where the
+    step's thinking starts in `text` (0 once its start scrolled out of the tail); calls of the same step in a row are
+    one part. The text alone could not say which step wrote it: a call that had not thought yet showed the previous
+    step's thinking under its own name («Сценарий» over the look pick).
+    Written on the event loop's thread only: the streaming thread hands its pieces over with call_soon_threadsafe."""
+
+    def __init__(self, progress: dict, step: str, loop: asyncio.AbstractEventLoop) -> None:
+        self.p, self.step, self.loop = progress, step, loop
+        prev = progress.get("thinking") or {}
+        self.text = prev.get("text", "")
+        self.secs0 = float(prev.get("secs", 0.0))
+        self.calls = int(prev.get("calls", 0))
+        self.cached = int(prev.get("cached", 0))
+        self.parts: list[dict] = [dict(x) for x in (prev.get("parts") or []) if isinstance(x, dict)]
+        self.t0 = time.time()
+        self.thinking_until: Optional[float] = None   # the first answer token: the thinking time stops there
+        self.seg = ""                                  # this call's thinking
+        self._last = 0.0
+        self._lock = threading.Lock()
+
+    def _node(self) -> Optional[str]:
+        rows = self.p.get("nodes")
+        if isinstance(rows, dict):
+            return next((k for k, r in rows.items() if isinstance(r, dict) and r.get("status") == "running"), None)
+        return None
+
+    def _snap(self, live: bool, call_secs: Optional[float] = None, cached: bool = False) -> dict:
+        end = self.thinking_until or time.time()
+        took = (end - self.t0 if self.seg else 0.0) if call_secs is None else call_secs
+        sep = "\n\n" if self.text and self.seg else ""
+        full = self.text + sep + self.seg
+        drop = max(0, len(full) - THINK_TAIL)
+        node = self._node()
+        # this call: the last part goes on when it is the same step (and node), else a new part starts here
+        parts = [dict(x) for x in self.parts]
+        last = parts[-1] if parts else None
+        if last and last.get("step") == self.step and last.get("node") == node:
+            last.update(secs=round(float(last.get("secs", 0)) + took, 1), calls=int(last.get("calls", 0)) + (0 if cached else 1),
+                        cached=int(last.get("cached", 0)) + (1 if cached else 0), live=live)
+            if self.seg and int(last.get("at", 0)) >= len(self.text):   # its earlier calls thought nothing: it starts here
+                last["at"] = len(self.text) + len(sep)
+        else:
+            parts.append({"step": self.step, "at": len(self.text) + len(sep), "secs": round(took, 1),
+                          "calls": 0 if cached else 1, "cached": 1 if cached else 0, "live": live, "node": node})
+        for x in parts:
+            x["at"] = max(0, int(x.get("at", 0)) - drop)
+            if x is not parts[-1]:
+                x["live"] = False   # the steps before are done
+        return {"step": self.step, "text": full[-THINK_TAIL:], "live": live, "secs": round(self.secs0 + took, 1),
+                "calls": self.calls, "cached": self.cached, "node": node, "parts": parts[-40:]}
+
+    def _put(self, snap: dict) -> None:
+        self.p["thinking"] = snap
+
+    def begin(self) -> None:
+        self.t0, self.thinking_until, self.seg = time.time(), None, ""
+        self._put(self._snap(True, call_secs=0.0))
+
+    def piece(self, thought: str, answer: str) -> None:
+        """From the streaming thread."""
+        with self._lock:
+            if thought:
+                self.seg += thought
+            if answer and self.thinking_until is None:
+                self.thinking_until = time.time()
+            now = time.time()
+            if now - self._last < THINK_EVERY:
+                return
+            self._last = now
+            snap = self._snap(True)
+        self.loop.call_soon_threadsafe(self._put, snap)
+
+    def end(self, cached_text: Optional[str] = None) -> None:
+        """The call is over (or answered from the cache, with the thinking saved beside it if any)."""
+        with self._lock:
+            if cached_text is not None:
+                self.cached += 1
+                self.seg, self.thinking_until = cached_text, self.t0
+                snap = self._snap(False, call_secs=0.0, cached=True)   # no time was spent thinking now
+            else:
+                self.calls += 1
+                snap = self._snap(False)
+            self.text, self.seg = snap["text"], ""
+            self.secs0 = snap["secs"]
+            self.parts = snap["parts"]
+        self._put(snap)
+
+
+def _think_file(cache: Path) -> Path:
+    return cache.with_name(cache.stem + ".think.txt")
 
 
 class Client:
@@ -290,7 +605,10 @@ class Client:
         self.seconds = 0.0
 
     async def chat_json(self, system: str, user: str, schema: dict, *, images: tuple[Path, ...] = (),
-                        temperature: float = 0.7, seed: int = 1, max_tokens: int = 4096, use_cache: bool = True) -> dict:
+                        temperature: float = 0.7, seed: int = 1, max_tokens: int = 4096, use_cache: bool = True,
+                        step: str = "script") -> dict:
+        """`step`: what this call is to the user while its thinking shows (script, look, places, lines, photo,
+        translate, cast) - not a part of the request."""
         system = system.replace("Russian", LANG.get())
         if LANG.get() != "Russian":   # the fields' names keep their old «_ru», and a model follows the name over the rules
             system += (f"\n\nLanguage: every field named ru, title_ru, outfit_ru or ending in _ru is written in {LANG.get()}, "
@@ -300,12 +618,20 @@ class Client:
                                   f"The model {self.model.name} does not see pictures: there is no mmproj file next to it"))
         imgs = [(MIME.get(Path(p).suffix.lower(), "image/jpeg"), base64.b64encode(Path(p).read_bytes()).decode()) for p in images]
         key = hashlib.sha1(json.dumps(
-            [self.model.name, self.model.path.stat().st_size, system, user, schema,
+            [self.model.name, self.model.bytes or self.model.path.stat().st_size, system, user, schema,
              [hashlib.sha1(b.encode()).hexdigest() for _, b in imgs], temperature, seed, max_tokens],
             ensure_ascii=False).encode()).hexdigest()
         cache = config.LLM_CACHE / f"{key}.json"
+        progress = THINK.get()
+        thoughts = Thoughts(progress, step, asyncio.get_running_loop()) if progress is not None else None
         if use_cache and cache.exists():
             self.cached += 1
+            if thoughts:   # no live thinking for a cached answer: the one saved with it, if any
+                try:
+                    saved = _think_file(cache).read_text(encoding="utf-8")
+                except OSError:
+                    saved = ""
+                thoughts.end(saved)
             return json.loads(cache.read_text(encoding="utf-8"))
 
         content: list[dict] | str = user
@@ -319,9 +645,18 @@ class Client:
             "chat_template_kwargs": {"enable_thinking": False},
         }
         # a cut answer (the token limit hit, broken JSON) is asked once more with another seed before it is an error
+        thought = ""
         for attempt in (1, 2):
             t0 = time.time()
-            d = await asyncio.to_thread(_post, "/v1/chat/completions", body)
+            if thoughts and not cloud():   # streamed: the same request, its thinking shown as it comes
+                thoughts.begin()
+                try:
+                    d = await asyncio.to_thread(_post_stream, "/v1/chat/completions", body, thoughts.piece)
+                finally:
+                    thoughts.end()
+                thought = d["choices"][0]["message"].get("reasoning_content") or ""
+            else:
+                d = await asyncio.to_thread(_post, "/v1/chat/completions", body)
             self.calls += 1
             self.seconds += time.time() - t0
             choice = d["choices"][0]
@@ -340,6 +675,11 @@ class Client:
                 self.retries += 1
                 body = {**body, "seed": seed + 7919}
         cache.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        if thought.strip():   # beside the answer, not in it: the cached answer stays what it was
+            try:
+                _think_file(cache).write_text(thought.strip()[-THINK_TAIL:], encoding="utf-8")
+            except OSError:
+                pass
         return data
 
 

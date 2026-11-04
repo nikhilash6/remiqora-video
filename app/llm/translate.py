@@ -163,7 +163,7 @@ def form(video: Optional[str], target: str = "video") -> str:
         return "krea"
     if target == "frame":
         return "flux2"
-    c = videomodels.shooter(videomodels.card(video or "h3"))
+    c = videomodels.shooter(videomodels.card(video or videomodels.default()))
     return "h3" if c.id == "h3" else "wan" if videomodels.family(c) == "wan5b" else "ltx"
 
 
@@ -212,7 +212,7 @@ async def translate_fields(fields: dict, seconds: float = 5, model_id: Optional[
     async with client.session(model_id) as llm:
         system = FIELDS_SYSTEM.replace("{seconds}", f"{seconds:g}") + FIELDS_NOTE.get(form(video), "")
         d = await llm.chat_json(system, json.dumps(src, ensure_ascii=False, indent=1),
-                                FIELDS_SCHEMA, temperature=0.2, seed=seed, max_tokens=2500)
+                                FIELDS_SCHEMA, temperature=0.2, seed=seed, max_tokens=2500, step="translate")
         beats = [str(b).strip() for b in d.get("beats") or []]
         beats = (beats + [""] * len(want))[:len(want)]
         return {"style": str(d.get("style", "")).strip(), "place": str(d.get("place", "")).strip(), "camera": str(d.get("camera", "")).strip(),
@@ -260,7 +260,7 @@ async def translate(text: str, seconds: float = 5, model_id: Optional[str] = Non
     it and get what happens, WAN only the motion and the camera); `target`: "picture" - the prompt goes to a «Картинка» node (Krea 2), a still."""
     client.use_lang(i18n.text_name())   # the texts' language (i18n)
     async with client.session(model_id) as llm:
-        d = await llm.chat_json(_system(video, f"{seconds:g}", frame, target), text.strip(), SCHEMA, temperature=0.2, seed=seed, max_tokens=3000)
+        d = await llm.chat_json(_system(video, f"{seconds:g}", frame, target), text.strip(), SCHEMA, temperature=0.2, seed=seed, max_tokens=3000, step="translate")
         en = str(d.get("prompt_en", ""))
         return {"en": layout(en) if form(video, target) == "h3" else re.sub(r"\s+", " ", en).strip(), "model": llm.model.name}
 
@@ -339,7 +339,7 @@ async def to_local(plan: dict, indices: Optional[list[int]] = None, step=None) -
             raw = s.get("raw") if isinstance(s.get("raw"), str) else ""
             action = s.get("ru", "") if not _lang_of_text(s, "ru", code) else ""
             user = json.dumps({"action": action, "prompt": raw or s.get("prompt", "")}, ensure_ascii=False)
-            d = await llm.chat_json(RU_SYSTEM, user, RU_SCHEMA, temperature=0.2, seed=1, max_tokens=3000)
+            d = await llm.chat_json(RU_SYSTEM, user, RU_SCHEMA, temperature=0.2, seed=1, max_tokens=3000, step="translate")
             ru, prompt_ru = str(d.get("ru", "")).strip(), str(d.get("prompt_ru", "")).strip()
             if action and ru and in_lang(ru, code):
                 s["ru_en"], s["ru"] = s.get("ru", ""), ru

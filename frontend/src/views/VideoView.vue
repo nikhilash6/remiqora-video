@@ -7,14 +7,14 @@ import { useI18n } from 'vue-i18n'
 import Icon from '../components/Icon.vue'
 import SidePanel from '../components/SidePanel.vue'
 import ShootConfirm from '../components/board/ShootConfirm.vue'
-import GuideButton from '../components/help/GuideButton.vue'
+import StageBar from '../components/StageBar.vue'
 import { api, post } from '../lib/api'
 import { banner, onJobEnd, pollJobs, videoModel } from '../lib/store'
 import { P, file, openProject, outLabel, reloadProject, startRender } from '../lib/project'
 import { useShots } from '../lib/shots'
 import { useShoot } from '../lib/shoot'
 import { QL } from '../lib/consts'
-import { mins, mmss } from '../lib/format'
+import { dur, mins } from '../lib/format'
 
 const { t } = useI18n()
 const props = defineProps<{ id: string }>()
@@ -46,7 +46,6 @@ const left = computed(() => {
     + (['assembling', 'upscaling'].includes(j.progress?.stage) ? 0 : 15))
 })
 const stage = computed(() => (run.value && run.value.progress ? run.value.progress.stage : saved.value ? 'done' : ''))
-const width = computed(() => (saved.value ? saved.value.width : run.value?.progress?.width))
 const out = computed(() => (P.proj ? outLabel(P.proj.settings) : ''))
 const asShot = computed(() => out.value === t('video.asShot'))
 // the other quality's button: its hint names the project's model and its frame (the cards' sizes are 16:9's)
@@ -98,15 +97,17 @@ onUnmounted(() => off?.())
   <div v-if="loaded && p" class="screen">
     <SidePanel id="video" class="side right" :label="t('video.title')" :width="380">
       <div class="stack" style="gap:10px">
-        <span class="lbl title-row"><GuideButton guide="video" compact /> {{ run ? t('video.left') : job ? t('video.inQueue') : saved ? (saved.complete ? t('video.ready') : t('video.notAll')) : t('video.title') }}</span>
-        <span class="big">{{ run ? `~${mins(left)}` : saved ? (saved.complete ? mmss(saved.duration || p.seconds || saved.shots.length * 5) : `${saved.shots.length} / ${n}`) : '—' }}</span>
+        <span class="lbl title-row">{{ run ? t('video.left') : job ? t('video.inQueue') : saved ? (saved.complete ? t('video.ready') : t('video.notAll')) : t('video.title') }}</span>
+        <span class="big">{{ run ? `~${mins(left)}` : saved ? (saved.complete ? dur(saved.duration || p.seconds || saved.shots.length * 5) : `${saved.shots.length} / ${n}`) : '—' }}</span>
         <div class="bar"><i :style="{ width: `${Math.round((ready / n) * 100)}%` }" /></div>
-        <span class="muted" style="font-size:13px">{{ QL[q] || q }} {{ width || '' }}{{ !asShot ? ' → ' + out : '' }}</span></div>
-      <ol class="stages">
+        <span class="muted" style="font-size:13px">{{ QL[q] || q }} · {{ out }}</span></div>
+      <!-- the list of stages is for a shoot going on or not finished; a finished video says it all in the summary above -->
+      <ol v-if="run || !allDone" class="stages">
         <li v-for="x in stages" :key="x.text" :class="x.state"><span>{{ x.state === 'ok' ? '✓' : x.state === 'now' ? '●' : '○' }}</span><span>{{ x.text }}</span><span>{{ x.note }}</span></li>
       </ol>
       <div v-if="last && last.status === 'error'" class="warn-line"><Icon name="warn" :size="14" /><span>{{ last.error }}</span></div>
       <div v-if="saved && saved.up_error && !run" class="warn-line"><Icon name="warn" :size="14" /><span>{{ saved.up_error }}</span></div>
+      <StageBar v-if="(P.proj as any).autopilot" :pid="P.proj!.id" :state="(P.proj as any).autopilot" />
       <div class="stack" style="gap:8px">
         <template v-if="job">
           <button type="button" class="btn" :disabled="job.stop_after" @click="stopAfter"><Icon name="stop" />{{ job.stop_after ? t('video.willStopAfter') : t('video.stopAfter') }}</button>
@@ -132,7 +133,7 @@ onUnmounted(() => off?.())
     <main class="main">
       <div class="player" :style="{ aspectRatio: (P.proj!.settings.aspect || '16:9').replace(':', ' / ') }">
         <video ref="player" :src="shown ? file(shown) : undefined" controls playsinline /><div class="player-note">{{ playerNote }}</div></div>
-      <div class="shots" :style="{ gridTemplateColumns: `repeat(${Math.min(n, 8)},minmax(0,1fr))` }">
+      <div class="shots" :style="{ '--cols': Math.min(n, 8) }">
         <figure v-for="(r, i) in rows" :key="i" class="shot" :class="{ now: r.status === 'running' }" :data-play="r.mp4 || undefined" @click="r.mp4 && play(r.mp4)">
           <div class="thumb"><img v-if="r.png" :src="file(r.png)" :alt="t('idea.sceneN', { n: i + 1 })"><span v-if="shot(r, i).pct !== null">{{ shot(r, i).pct }}%</span></div>
           <figcaption><b>{{ i + 1 }}</b><span :class="shot(r, i).tone">{{ shot(r, i).st }}</span><small v-if="shot(r, i).cap" :title="shot(r, i).cap">{{ shot(r, i).cap }}</small></figcaption></figure>

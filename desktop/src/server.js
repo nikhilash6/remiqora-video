@@ -4,7 +4,7 @@ const fsp = require('node:fs/promises');
 const net = require('node:net');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
-const { spawnTree, killTree, cleanEnv } = require('./proc');
+const { spawnTree, killTree, cleanEnv, appVersion } = require('./proc');
 const { ffmpegBin } = require('./bootstrap/components');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -69,7 +69,7 @@ class BackendServer extends EventEmitter {
     const log = fs.createWriteStream(path.join(L.logs, 'app-server.log'), { flags: 'a' });
     log.write(`\n--- start ${new Date().toISOString()} port ${port}\n`);
     const child = spawnTree(L.appPython, ['-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', String(port)], {
-      cwd: L.app, env: cleanEnv({ PYTHONUTF8: '1', HOST: '127.0.0.1', PORT: String(port) }), stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: L.app, env: cleanEnv({ PYTHONUTF8: '1', HOST: '127.0.0.1', PORT: String(port), REMIQORA_VIDEO_VERSION: appVersion() }), stdio: ['ignore', 'pipe', 'pipe'],
     });
     this.child = child;
     child.stdout.pipe(log, { end: false });

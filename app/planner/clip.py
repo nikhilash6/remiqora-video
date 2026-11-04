@@ -67,10 +67,19 @@ def _split(a: float, b: float, grid: list[float], max_len: float, target: float)
     return None
 
 
-def scenes(a: song.Analysis, lines: list[dict], ex0: float, ex1: float, max_shot: float = MAX_SHOT) -> list[dict]:
+def scenes(a: song.Analysis, lines: list[dict], ex0: float, ex1: float, max_shot: float = MAX_SHOT,
+           shot: Optional[tuple[float, float]] = None) -> list[dict]:
     """The clip's scenes over [ex0, ex1] (song time): [{start, seconds} in the video's time, part, loud, energy,
-    chorus, sung: [{start, end, text}] relative to the scene, voice: 0..1, singing: words for the writer, shot}]."""
+    chorus, sung: [{start, end, text}] relative to the scene, voice: 0..1, singing: words for the writer, shot}].
+    `shot`: the delivery's (min, max) seconds of a scene (looks.scene_rules) - a loud part aims a quarter of the way
+    up the range, a quiet one twice that (within it), none longer than max + 2; None: LOUD_SHOT and MAX_SHOT."""
     max_shot = min(MAX_SHOT, max_shot)
+    loud_shot, quiet_cap = LOUD_SHOT, None
+    if shot:
+        lo, hi = float(shot[0]), float(shot[1])
+        loud_shot = max(MIN_SHOT, lo + (hi - lo) / 4)
+        quiet_cap = hi
+        max_shot = min(max_shot, hi + 2)
     chorus = song.chorus_spans(lines)
     peak = max((s.energy for s in a.sections), default=1.0) or 1.0
     bars = [t for t in a.bars if ex0 - 1e-6 <= t <= ex1 + 1e-6]
@@ -96,7 +105,7 @@ def scenes(a: song.Analysis, lines: list[dict], ex0: float, ex1: float, max_shot
         sec = a.section_at(mid)
         in_chorus = any(min(p1, cb) - max(p0, ca) >= 0.5 * (p1 - p0) for ca, cb in chorus)
         loud = in_chorus or sec.kind == "drop" or sec.energy >= 0.8 * peak
-        target = LOUD_SHOT if loud else 2 * LOUD_SHOT
+        target = loud_shot if loud else min(2 * loud_shot, quiet_cap or 2 * loud_shot)
         bar_target = max(1, round(target / a.bar_s)) * a.bar_s
         pieces = None
         for grid in (bars, a.beats):
@@ -139,7 +148,7 @@ LIVELY = ("orbit", "track_side", "push_in", "pan", "rise", "pull_back")   # a lo
 CALM = ("static", "push_in", "static", "pan")                          # a quiet one's
 
 
-def vary_cameras(scenes: list[dict], handheld: bool = False) -> None:
+def vary_cameras(scenes: list[dict], handheld: bool = False, lively: Optional[list[str]] = None) -> None:
     """A small writer gives every scene of a clip a static camera (2026-10-23: 15 of 15); a music video wants the
     camera to move with the music. When more than half are static, the static ones get a camera by their part:
     lively in a loud part, calm in a quiet one; a singing close-up stays static or pushes in slowly. `handheld`
@@ -155,7 +164,7 @@ def vary_cameras(scenes: list[dict], handheld: bool = False) -> None:
         if s.get("shot") == "sing":
             s["camera"] = "push_in" if s.get("loud") and s.get("framing") != "close" else "static"
         elif s.get("loud"):
-            s["camera"] = LIVELY[k_loud % len(LIVELY)]
+            s["camera"] = (lively or LIVELY)[k_loud % len(lively or LIVELY)]
             k_loud += 1
         else:
             s["camera"] = CALM[k_calm % len(CALM)]

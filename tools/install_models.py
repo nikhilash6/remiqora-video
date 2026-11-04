@@ -9,6 +9,8 @@ one is not downloaded again. A download goes to <name>.part and continues from i
 three tries with a pause, then the sha256 is checked against Hugging Face's. A set that fails (no network, no access to
 a gated repository) does not stop the others: the summary says what is missing and why, and a second run continues.
 --json prints one JSON object per line for the wizard: plan, file, progress, set, summary.
+--pretty (the default on a terminal without --json) is the person's view: a table of sets, a coloured bar per file with
+percent, speed and ETA, ✓ / ✗ per file (tools/install_console.py). --plan (--dry-run) downloads nothing.
 """
 from __future__ import annotations
 
@@ -24,6 +26,12 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # python -I does not put the script's folder there
+try:
+    import install_console as con  # noqa: E402
+except ImportError:   # the downloader alone (cloud worker, a stray copy): no pretty view
+    con = None
+
 ROOT = Path(__file__).resolve().parent.parent
 HF = "https://huggingface.co"
 CHUNK = 8 * 1024 * 1024
@@ -36,12 +44,16 @@ KINDS = {"diffusion_models": ("diffusion_models", "unet"), "text_encoders": ("te
 EMPTY = ("loras/h3", "loras/ltx23", "loras/ltx25", "loras/wan5b", "loras/krea2", "loras/flux2")
 
 JSON = False
+PRETTY = False
 LANG = "ru"
+SET_TITLES: dict[str, str] = {}
 
 
 def say(event: str, text: str = "", **data) -> None:
     if JSON:
         print(json.dumps({"event": event, **data}, ensure_ascii=False), flush=True)
+    elif PRETTY:
+        show(event, text, data)
     elif text:
         print(text, flush=True)
 
@@ -52,6 +64,127 @@ def L(ru: str, en: str) -> str:
 
 def gb(n: float) -> str:
     return f"{n / 1e9:.1f} {L('ГБ', 'GB')}"
+
+
+# ----- the person's view (--pretty): the same events the wizard gets as JSON, as lines and bars -----
+_cur: dict | None = None   # the file on screen: name, bytes, start, base (bytes at the first tick), speed, last, pct
+
+
+def _cols() -> int:
+    return shutil.get_terminal_size((100, 24)).columns
+
+
+def _pad(line: str) -> str:
+    """The line padded to the window's width, so a redraw leaves nothing of the longer one before it."""
+    return line + " " * max(_cols() - 1 - len(con.strip(line)), 0)
+
+
+def _end_file(line: str) -> None:
+    global _cur
+    con.write(("\r" + _pad(line)) if (_cur and con.is_tty()) else line)
+    _cur = None
+
+
+def _progress(name: str, done: int, total: int) -> None:
+    c = _cur
+    if c is None:
+        return
+    now = time.time()
+    if c["base"] is None:
+        c["base"] = done   # a resumed .part starts above zero: the speed counts only what came in now
+    if c["last"] is not None and now > c["last"][0]:
+        inst = (done - c["last"][1]) / (now - c["last"][0])
+        c["speed"] = inst if not c["speed"] else c["speed"] * 0.8 + inst * 0.2
+    c["last"] = (now, done)
+    pct = int(done * 100 / total) if total else 0
+    if not con.is_tty():   # redirected: a line per 10 %, not a thousand redraws
+        if pct // 10 != c["pct"] // 10:
+            con.write(f"    {name} {pct}%")
+        c["pct"] = pct
+        return
+    c["pct"] = pct
+    eta = (total - done) / c["speed"] if c["speed"] > 0 else None
+    tail = (f" {pct:3d}%  {done / 1e9:.1f}/{total / 1e9:.1f} {L('ГБ', 'GB')}  {c['speed'] / 1e6:5.0f} {L('МБ/с', 'MB/s')}  "
+            + (L("ещё ", "ETA ") + con.clock(eta) if eta is not None else L("считаю скорость…", "measuring speed…")))
+    label = (name if len(name) <= 30 else name[:29] + "…").ljust(30)
+    width = min(max(_cols() - 6 - 30 - len(tail) - 3, 8), 30)
+    con.write("\r" + _pad(f"    {con.paint('violet', '▸')} {label} {con.bar(done / total if total else 0, width)}{tail}"), end="")
+
+
+def show(event: str, text: str, d: dict) -> None:
+    global _cur
+    P = con.paint
+    if event == "set" and d.get("status") == "running":
+        con.write()
+        con.write(f"  {P('violet', '▍', bold=True)} {text.strip().strip('=').strip()}")
+    elif event == "file":
+        st, name = d.get("status"), d.get("name", "")
+        if st == "present":
+            con.write(f"    {P('green', '✓')} {name}  {con.dim(L('уже есть', 'already there'))}")
+        elif st == "download":
+            _cur = {"name": name, "bytes": d["bytes"], "t0": time.time(), "speed": 0.0, "last": None, "pct": -1, "base": None}
+            _progress(name, 0, d["bytes"])
+        elif st == "done":
+            c = _cur or {}
+            took = time.time() - c.get("t0", time.time())
+            avg = (c.get("bytes", 0) - (c.get("base") or 0)) / took / 1e6 if took > 0.5 else 0
+            more = gb(c.get("bytes", 0)) + "  ·  " + con.clock(took) + (f"  ·  {avg:.0f} {L('МБ/с', 'MB/s')}" if avg else "")
+            _end_file(f"    {P('green', '✓')} {name}  {con.dim(more)}")
+        elif st == "failed":
+            _end_file(f"    {P('red', '✗')} {name}  {P('red', d.get('error', ''))}")
+    elif event == "progress":
+        _progress(d["name"], d["done"], d["total"])
+        if d.get("overallTotal"):
+            con.title(f"{L('установка', 'installing')} · {int(d['overall'] * 100 / d['overallTotal'])}%")
+    elif event == "retry":
+        _end_file(f"    {P('amber', '↻')} {text.strip()}")
+    elif event == "error":
+        con.write(f"  {P('red', '✗', bold=True)} {P('red', text)}")
+    elif event == "summary":
+        summary(d["sets"])
+
+
+def plan_table(p: dict, total: int, models: Path, files: bool) -> None:
+    """The sets with what is there already and what comes, the models folder and the disk."""
+    P = con.paint
+    w = max(len(s["title"]) for s in p.values()) + 2
+    head = L("Набор", "Set").ljust(w + 2) + L("размер", "size").rjust(10) + L("уже есть", "there").rjust(12) + L("скачать", "to get").rjust(12)
+    con.write("  " + con.dim(head))
+    for sid, s in p.items():
+        need = s["bytes"] - s["have"]
+        con.write(f"  {P('green', '✓') if need == 0 else P('violet', '▍')} {s['title'].ljust(w)}{gb(s['bytes']).rjust(10)}{gb(s['have']).rjust(12)}"
+                  + (P("cyan", gb(need).rjust(12)) if need else con.dim("—".rjust(12))))
+        if files:
+            for f in s["files"]:
+                con.write(f"      {P('green', '✓') if f['found'] else P('grey', '○')} {f['name']}  {con.dim(gb(f['bytes']))}")
+    try:
+        free = shutil.disk_usage(models if models.exists() else models.parent).free
+    except OSError:
+        free = None
+    con.write()
+    con.write(f"  {con.dim(L('Папка моделей:', 'Models folder:'))} {models}")
+    line = f"  {L('Будет скачано', 'To download')}: {P('cyan', gb(total), bold=True)}"
+    if free is not None:
+        enough = free >= total + 512 * 2**20
+        line += f", {L('свободно', 'free')}: {P('green' if enough else 'red', gb(free), bold=True)}"
+        if not enough:
+            line += "  " + P("red", L("— не хватает места", "- not enough space"))
+    con.write(line)
+
+
+def summary(result: dict) -> None:
+    P = con.paint
+    con.write()
+    con.write(f"  {P('violet', '▍', bold=True)} {L('Итог', 'Summary')}")
+    for sid, r in result.items():
+        word = {"done": L("готово", "ready"), "skipped": L("пропущен", "skipped"), "failed": L("не докачан", "not finished")}[r["status"]]
+        mark, col = ("✓", "green") if r["status"] == "done" else ("✗", "red") if r["status"] == "failed" else ("○", "amber")
+        con.write(f"    {P(col, mark)} {SET_TITLES.get(sid, sid).ljust(14)}{P(col, word)}" + (f"  {con.dim(r['error'])}" if r["error"] else ""))
+    if any(r["status"] != "done" for r in result.values()):
+        con.write()
+        con.write("  " + P("amber", L("Часть наборов не скачалась. Запустите setup_models.bat ещё раз — он продолжит с того же места (файлы .part).",
+                                     "Some sets did not download. Run setup_models.bat again - it resumes where it stopped (.part files).")))
+    con.write()
 
 
 class Refused(Exception):
@@ -169,8 +302,22 @@ def plan(m: dict, sets: list[str], models: Path, roots: list[Path]) -> dict:
     return out
 
 
+def h3_licensed(m: dict, sid: str) -> bool:
+    """A set under the MiniMax H3 licence (H3 itself, Ref2VA): it does not apply in the US, EU, UK and South Korea."""
+    return str(m["sets"][sid].get("license", {}).get("name", "")).startswith("MiniMax H3")
+
+
+def version() -> str:
+    if v := os.environ.get("REMIQORA_VIDEO_VERSION", "").strip():   # the desktop app's own version
+        return v
+    try:
+        return json.loads((ROOT / "desktop" / "package.json").read_text(encoding="utf-8"))["version"]
+    except (OSError, ValueError, KeyError):
+        return ""
+
+
 def main() -> int:
-    global JSON, LANG
+    global JSON, PRETTY, LANG
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--manifest", default=str(ROOT / "install" / "manifest.json"))
     ap.add_argument("--models-dir", required=True)
@@ -179,12 +326,22 @@ def main() -> int:
     ap.add_argument("--find", default="", help="folders with weights already downloaded, separated by ;")
     ap.add_argument("--token", default="")
     ap.add_argument("--token-file", default="")
-    ap.add_argument("--plan", action="store_true", help="only say what is there and what would be downloaded")
+    ap.add_argument("--plan", "--dry-run", dest="plan", action="store_true", help="only say what is there and what would be downloaded")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--pretty", action="store_true", help="the person's view (the default on a terminal); --json wins")
+    ap.add_argument("--no-banner", action="store_true", help="--pretty without the splash (setup_models.ps1 has shown it)")
     ap.add_argument("--lang", default="ru", choices=("ru", "en"))
+    ap.add_argument("--accept-h3", action="store_true", help="the user accepted the MiniMax H3 licence statement (required for H3's sets)")
     args = ap.parse_args()
     JSON, LANG = args.json, args.lang
+    PRETTY = con is not None and not JSON and (args.pretty or con.is_tty())
     sys.stdout.reconfigure(encoding="utf-8")   # the wizard and PowerShell read UTF-8, not the console's code page
+    if PRETTY:
+        con.setup()
+        con.title(L("установка", "installing"))
+        if not args.no_banner:
+            con.banner(L("Установка моделей", "Model installer") + f"  ·  {version()}")
+            con.write()
 
     m = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     sets = [s for s in (m["profiles"].get(args.profile, []) if args.profile else args.sets.split(",")) if s.strip()]
@@ -205,10 +362,20 @@ def main() -> int:
         (models / sub).mkdir(parents=True, exist_ok=True)
 
     p = plan(m, sets, models, roots)
+    SET_TITLES.update({sid: st["title"] for sid, st in p.items()})
+    # the licence matters only for what is still to download: a complete H3 set (an upgrade) needs no tick
+    h3_sets = [sid for sid, st in p.items() if h3_licensed(m, sid) and st["bytes"] - st["have"] > 0]
+    if h3_sets and not args.accept_h3:   # the licence statement is accepted explicitly in every front end
+        say("error", L("Лицензия MiniMax H3 не принята: наборы H3 не качаются без --accept-h3 (галочка в мастере, «y» в меню скрипта).",
+                       "The MiniMax H3 licence is not accepted: the H3 sets are not downloaded without --accept-h3."),
+            code="licence", sets=h3_sets)
+        return 1
     total = sum(s["bytes"] - s["have"] for s in p.values())
     say("plan", L(f"Наборы: {', '.join(s['title'] for s in p.values())}; скачать {gb(total)}",
                   f"Sets: {', '.join(s['title'] for s in p.values())}; to download {gb(total)}"),
         sets={k: {kk: v for kk, v in s.items() if kk != "files"} for k, s in p.items()}, total=total)
+    if PRETTY:
+        plan_table(p, total, models, files=args.plan)
     if args.plan:
         return 0
 

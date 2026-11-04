@@ -12,7 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from . import config, edit, graph, graph_io, i18n, jobs, picture, projects, videomodels
+from . import config, edit, graph, graph_io, i18n, jobs, picture, projects, timings, videomodels
 from .engine import graphs
 from .engine.comfy import COMFY
 from .llm import client as llm
@@ -45,7 +45,7 @@ class NewGraph(BaseModel):
     name: str = Field("", max_length=120)
     aspect: str = "16:9"
     template: Optional[str] = None
-    video_model: str = "h3"          # phase 10: which model shoots its scenes
+    video_model: str = ""            # phase 10 ("": the default one): which model shoots its scenes
 
 
 @router.post("/api/graphs")
@@ -59,9 +59,12 @@ def new_graph(req: NewGraph):
             raise HTTPException(404, i18n.L("Нет такого шаблона", "No such template"))
         g = _fresh_ids({"nodes": t["nodes"], "edges": t["edges"]})
     proj = graph_io.new_project(req.name or i18n.L("Граф", "Graph"), req.aspect, g=g)
-    if videomodels.offered(req.video_model) and req.video_model != "h3":
-        proj["settings"]["video_model"] = req.video_model
-        projects.save(proj)
+    vm = videomodels.pick(req.video_model)
+    if videomodels.offered(vm) and vm != "h3":
+        proj["settings"]["video_model"] = vm
+    # «Стиль проекта»: a new graph's writer reads a delivery and a look («Решит сценарист» until chosen), not a mood
+    proj["settings"].update(delivery="auto", look="auto", look_own="")
+    projects.save(proj)
     return {"project": proj["id"]}
 
 
@@ -76,6 +79,8 @@ def _fresh_ids(g: dict) -> dict:
 def _remap(d: dict, ids: dict) -> dict:
     if isinstance(d.get("order"), list):
         d["order"] = [ids.get(x, x) for x in d["order"]]
+    if isinstance(d.get("from"), str) and d["from"] in ids:   # a template's montage of its writer («Кино»)
+        d["from"] = ids[d["from"]]
     return d
 
 
@@ -89,6 +94,7 @@ class GraphDoc(BaseModel):
     rev: Optional[int] = None
     nodes: list[dict] = []
     edges: list[dict] = []
+    view: Optional[dict] = None      # the editor's look of the links (graph.clean keeps what it knows)
 
 
 @router.put("/api/projects/{pid}/nodes")
@@ -151,26 +157,64 @@ def nodes_llm(pid: str, req: LlmRequest):
         m = llm.find(req.model)
     except llm.LLMError as e:
         raise HTTPException(400, str(e)) from e
-    if any(n["type"] == "hero" for n in todo) and not m.mmproj:
+    c = graph.Ctx(projects.load(pid), g)
+    photos = any(n["type"] == "clip_writer" and (h := graph.clip_writer_inputs(c, n)[2]) and h["data"].get("photo") for n in todo)
+    if (photos or any(n["type"] == "hero" for n in todo)) and not m.mmproj:   # the clip writer reads the hero's photo
         raise HTTPException(400, i18n.L(f"Модель {m.name} не видит картинок: выберите другую в шапке",
                                           f"Model {m.name} can't see pictures: choose another one in the header"))
     n_writers = sum(1 for n in todo if n["type"] == "writer")
+    # a clip writer writes every scene of the piece (~ one per 4 s of it), as the button's «сценарий» stage
+    clip_s, n_clip = 0.0, 0
+    for n in todo:
+        if n["type"] == "clip_writer":
+            s = graph.clip_writer_inputs(c, n)[0]
+            k = max(1, round(((graph.evaluate_node(c, s["id"]).seconds if s else 0) or 60) / 4))
+            clip_s, n_clip = clip_s + timings.writer_seconds(m.name, k, 10 + 4 * k), n_clip + 1
     return jobs.submit_task("graph-llm", {"project": pid, "ids": [n["id"] for n in todo], "model": m.id},
                             lambda job: graph.run_llm(job, pid, [n["id"] for n in todo], m.id),
-                            estimate=15 + 25 * (len(todo) - n_writers) + 40 * n_writers).public()
+                            estimate=15 + 25 * (len(todo) - n_writers - n_clip) + 40 * n_writers + clip_s).public()
 
 
 class ExpandRequest(BaseModel):
     node: str
+    edited: str = "ask"              # «Сценарист клипа»: nodes the user changed since - ask | keep | replace
 
 
 @router.post("/api/projects/{pid}/nodes/expand")
 def nodes_expand(pid: str, req: ExpandRequest):
     _project(pid)
+    if req.edited not in ("ask", "keep", "replace"):
+        raise HTTPException(400, i18n.L("Неизвестный выбор", "Unknown choice"))
     try:
-        return graph.expand(pid, req.node)
+        return graph.expand(pid, req.node, req.edited)
+    except graph.Edited as e:   # the page asks: keep the user's changes or make those nodes again
+        raise HTTPException(409, {"message": i18n.L("Эти узлы вы меняли после «Развернуть в сцены»", "You changed these nodes after «Expand into scenes»"),
+                                  "edited": e.names}) from e
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+
+
+class SongPick(BaseModel):
+    song: str = Field(..., max_length=40)
+
+
+@router.post("/api/projects/{pid}/nodes/song")
+def nodes_song(pid: str, body: SongPick):
+    """A «Песня» node's song: one of the song library (uploaded by POST /api/songs: stored once, its bars and parts
+    found), copied into the project as the track the scenes and the «Склейка по тактам» take. -> {file, name, ...}."""
+    from . import song
+    _project(pid)
+    try:
+        src = song.file_of(body.song)
+        info = song.public(body.song)
+    except Exception as e:  # noqa: BLE001 - an unknown or broken song: said as it is
+        raise HTTPException(404, str(e)) from e
+    name = f"song_{body.song}{src.suffix.lower()}"
+    dest = projects.folder(pid) / name
+    if not dest.exists():
+        shutil.copyfile(src, dest)
+    return {"file": name, "name": info["name"], "duration": round(info["duration"], 2), "bpm": info["bpm"],
+            "recognised": info["recognised"], "lines": len(info["lines"])}
 
 
 @router.post("/api/projects/{pid}/nodes/upload")
@@ -245,7 +289,7 @@ def _montage_view(proj: dict, nid: str) -> dict:
     to_shoot = sum(1 for s, _ in c.inputs(nid, "clips") if graph.evaluate_node(c, s).state != "ready")
     return {**ed, "quality": c.quality, "width": c.w, "height": c.h, "fps": edit.FPS, "sig": sig,
             "built_sig": sig if a.state == "ready" else None, "built": a.state == "ready", "to_shoot": to_shoot,
-            "track": None, "kind": "graph", "node": nid, "title": n["data"].get("title") or i18n.L("Монтаж", "Montage"), "rev": g.get("rev", 0),
+            "track": graph.montage_track_view(c, nid, ed), "kind": "graph", "node": nid, "title": n["data"].get("title") or i18n.L("Монтаж", "Montage"), "rev": g.get("rev", 0),
             "state": a.state, "error": a.error}
 
 

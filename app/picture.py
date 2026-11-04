@@ -27,8 +27,8 @@ EDIT_MODEL = "flux2"   # ... while FLUX.2 Klein is (edit)
 
 def problem() -> Optional[str]:
     """Why a picture can't be made, or None."""
-    from .models_page import find_file
-    missing = [getattr(config, k) for k in ("KREA_UNET", "KREA_CLIP", "KREA_VAE") if not find_file(k)]
+    from .models_page import has_file
+    missing = [getattr(config, k) for k in ("KREA_UNET", "KREA_CLIP", "KREA_VAE") if not has_file(k)]
     return i18n.L("Krea 2: нет файлов " + ", ".join(missing) + " («Модели и настройки» → Krea 2)", "Krea 2: missing files " + ", ".join(missing) + " («Models and settings» → Krea 2)") if missing else None
 
 
@@ -127,8 +127,8 @@ async def generate(job: jobs.Job, prompt: str, seed: int, w: int, h: int, dest: 
 
 def edit_problem() -> Optional[str]:
     """Why a picture by reference can't be made (FLUX.2 Klein's files), or None."""
-    from .models_page import find_file
-    missing = [getattr(config, k) for k in ("FLUX2_UNET", "FLUX2_CLIP", "FLUX2_VAE") if not find_file(k)]
+    from .models_page import has_file
+    missing = [getattr(config, k) for k in ("FLUX2_UNET", "FLUX2_CLIP", "FLUX2_VAE") if not has_file(k)]
     return i18n.L("FLUX.2 Klein: нет файлов " + ", ".join(missing), "FLUX.2 Klein: missing files " + ", ".join(missing)) if missing else None
 
 

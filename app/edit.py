@@ -513,7 +513,9 @@ def render(ed: dict, folder: Path, dest: Path, size: Optional[tuple[int, int]] =
         fout = f",afade=t=out:st={n / FPS - e_out:.6f}:d={e_out}" if k < len(clips) - 1 and clips[k + 1]["tr"] in ("cut", "flash") else ""
         flash = f",fade=t=in:st=0:d={FLASH / FPS:.6f}:color=white" if k and c["tr"] == "flash" else ""
         if c["speed"] == 1:
-            pv, pa = "setpts=PTS-STARTPTS", "asetpts=PTS-STARTPTS"
+            # the sound exactly the clip's frames long: a shot's sound a little shorter than its picture (LTX) left the
+            # joined sound 0.25 s short of a 28 s clip, its tail silent under the song (2026-11-03)
+            pv, pa = "setpts=PTS-STARTPTS", f"asetpts=PTS-STARTPTS,apad,atrim=0:{at(n)}"
         else:   # slower / faster: the frames follow, then exactly n of them (a last one repeated if the rate came short)
             pv = (f"setpts=(PTS-STARTPTS)/{c['speed']},fps={FPS},tpad=stop_mode=clone:stop=2,trim=end_frame={n},"
                   f"setpts=PTS-STARTPTS")
@@ -598,7 +600,9 @@ def mix(ed: dict, folder: Path, video: Path, track: Optional[dict], dest: Path) 
         if t["offset"]:
             args += ["-ss", f"{t['offset']:.3f}"]
         args += ["-i", str(folder / track["file"])]
-        m = (f"[1:a]volume={t['volume']},afade=t=in:st=0:d={t['fade_in']},apad,atrim=0:{dur:.3f},"
+        # `delay`: the track starts this late in the video (the graph's «Склейка по тактам» with an intro before the song)
+        ms = round(max(0.0, float(track.get("delay") or 0)) * 1000)
+        m = (f"[1:a]{f'adelay={ms}|{ms},' if ms else ''}volume={t['volume']},afade=t=in:st=0:d={t['fade_in']},apad,atrim=0:{dur:.3f},"
              f"afade=t=out:st={max(0.0, dur - t['fade_out']):.3f}:d={t['fade_out']},asetpts=PTS-STARTPTS")
         if duck:   # the track gives way where the scenes speak: up to 10:1 above -34 dB of their sound
             parts.append(f"{m}[m0]")

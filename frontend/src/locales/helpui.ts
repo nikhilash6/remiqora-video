@@ -19,7 +19,7 @@ export default {
     openKeys: 'Открыть лист клавиш', tips: 'Советы', limits: 'Ограничения',
     more: 'Подробно в справочнике:', full: 'Полная справка',
     scr: {
-      idea: { title: 'Идея', text: 'Пара фраз, фото, длина, кадр, настроение — сценарист расписывает сцены.' },
+      idea: { title: 'Идея', text: 'Пара фраз, фото, длина, кадр, подача и вид — сценарист расписывает сцены.' },
       board: { title: 'Раскадровка', text: 'Сцены по 5 с: текст, герой, камера, порядок, съёмка.' },
       video: { title: 'Ролик', text: 'Съёмка цепочкой, склейка, музыка, 1080p / 4K.' },
       graph: { title: 'Граф', text: 'Ветки, дубли, несколько выходов. «Граф» на главной.' },
@@ -45,7 +45,7 @@ export default {
     openKeys: 'Open the keys sheet', tips: 'Tips', limits: 'Limits',
     more: 'More in the reference:', full: 'Full help',
     scr: {
-      idea: { title: 'Idea', text: 'A couple of phrases, a photo, length, frame, mood — the writer lays out the scenes.' },
+      idea: { title: 'Idea', text: 'A couple of phrases, a photo, length, frame, delivery and look — the writer lays out the scenes.' },
       board: { title: 'Storyboard', text: 'Scenes of 5 s: text, hero, camera, order, shooting.' },
       video: { title: 'Video', text: 'Shooting as a chain, cuts, music, 1080p / 4K.' },
       graph: { title: 'Graph', text: 'Branches, takes, several outputs. «Graph» on the home screen.' },

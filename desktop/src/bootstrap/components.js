@@ -5,7 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { downloadFile, withRetries } = require('./download');
 const { extract, extractAtomic } = require('./extract');
-const { runCommand, cleanEnv } = require('../proc');
+const { runCommand, cleanEnv, appVersion } = require('../proc');
 const { setStatus, withNeeds } = require('./sets');
 
 const exists = (p) => fsp.access(p).then(() => true, () => false);
@@ -17,7 +17,7 @@ const readOr = (file, fallback = '') => { try { return fs.readFileSync(file, 'ut
 function toolEnv(L, extra = {}) {
   return cleanEnv({
     UV_CACHE_DIR: L.uvCache, UV_PYTHON: L.python, UV_PYTHON_DOWNLOADS: 'never', UV_NO_PROGRESS: '1',
-    HF_HOME: L.hfHome, TORCH_HOME: L.torchHome, HF_HUB_DISABLE_SYMLINKS_WARNING: '1', PYTHONUTF8: '1', NO_COLOR: '1', ...extra,
+    HF_HOME: L.hfHome, TORCH_HOME: L.torchHome, HF_HUB_DISABLE_SYMLINKS_WARNING: '1', PYTHONUTF8: '1', NO_COLOR: '1', REMIQORA_VIDEO_VERSION: appVersion(), ...extra,
   });
 }
 
@@ -253,6 +253,8 @@ function buildComponents({ L, manifest, resources, selection }) {
       const args = [path.join(L.app, 'tools', 'install_models.py'), '--json', '--lang', ctx.lang || 'ru',
         '--manifest', path.join(L.app, 'install', 'manifest.json'), '--models-dir', L.models, '--sets', sets.join(','),
         '--find', (selection.find || []).join(';'), '--token-file', L.hfToken];
+      // the wizard shows H3's licence statement and does not start without the tick; the downloader refuses H3 without this flag
+      if (ctx.h3Accepted) args.push('--accept-h3');
       const result = {};
       let summary = null;
       await runCommand(L.appPython, args, {

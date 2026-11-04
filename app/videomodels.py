@@ -52,7 +52,7 @@ CARDS: dict[str, Card] = {
     "h3": Card("h3", "MiniMax H3", "H3", "Картинка и звук вместе, реплики на языке ролика, лица по фото (Ref2VA).",
                sound=True, voice=True, refs=True, track=False, max_seconds=15, grid=(17, 5), step=32,
                mp={"draft": 0.5, "final": 0.98}, base={"draft": 95.0, "final": 271.0}, steps=8,
-               keys=("H3_UNET", "H3_CLIP", "H3_VAE", "H3_AUDIO_VAE"), license="MiniMax H3: своя лицензия, проверьте условия для коммерции", color="#7F77DD"),
+               keys=("H3_UNET", "H3_CLIP", "H3_VAE", "H3_AUDIO_VAE"), license="Лицензия MiniMax H3 не действует в США, ЕС, Великобритании и Южной Корее", color="#7F77DD"),
     "ltx25": Card("ltx25", "LTX 2.5", "LTX 2.5", "Быстрая: картинка и свой звук, две стадии с апскейлом латента.",
                   sound=True, voice=True, refs=False, track=False, max_seconds=10, grid=(8, 1), step=64,
                   mp={"draft": 0.5625, "final": 0.86}, base={"draft": 30.0, "final": 70.0}, steps=11,
@@ -70,7 +70,7 @@ CARDS: dict[str, Card] = {
                   mp={"draft": 0.5, "final": 0.86}, base={"draft": 120.0, "final": 300.0}, steps=20,
                   keys=("WAN_UNET", "WAN_CLIP", "WAN_VAE"), license="Apache-2.0: можно и для коммерции", recipe="wan5b-20-cfg5-shift8", color="#639922"),
 }
-# Shots imported from remiqora-video (tools/import_remiqora.py): LTX made there by its own engine - the official Lightricks
+# Shots imported from the old Remiqora: LTX made there by its own engine - the official Lightricks
 # pipelines on other weights (2.3: the full distilled-1.1 checkpoint, the track driving it; 2.5: the bf16 transformer
 # rebuilt from the int8 files). Their keys name that recipe, so they never pass for a shot of ours; a scene changed
 # after the import (its prompt, seed, start frame) is shot by our LTX of the same version.
@@ -84,14 +84,15 @@ CARDS["wan5b_fast"] = replace(CARDS["wan5b"], id="wan5b_fast", name="WAN 2.2 5B 
                               text="WAN 2.2 5B с LoRA FastWan: 8 шагов вместо 20, в разы быстрее; без звука.",
                               base={"draft": 30.0, "final": 75.0}, steps=8, keys=CARDS["wan5b"].keys + ("WAN_FAST_LORA",),
                               recipe="wan5b-fastwan-r128-8-cfg1-shift5", color="#8DB04A")
-DEFAULT = "h3"
+DEFAULT = "h3"   # what a stored project without a model means (before phase 10 everything was H3); NEW choices use default()
+ORDER = ("h3", "ltx25", "ltx23", "wan5b")   # the first installed one is the default for a new project
 
 
 # the cards' texts and licenses in English (the Russian ones are the keys): text_of / license_of pick by the interface
 _EN = {
     "Картинка и звук вместе, реплики на языке ролика, лица по фото (Ref2VA).":
         "Picture and sound together, spoken lines in the video's language, faces from photos (Ref2VA).",
-    "MiniMax H3: своя лицензия, проверьте условия для коммерции": "MiniMax H3: its own license, check the terms for commercial use",
+    "Лицензия MiniMax H3 не действует в США, ЕС, Великобритании и Южной Корее": "The MiniMax H3 license does not apply in the US, the EU, the UK and South Korea",
     "Быстрая: картинка и свой звук, две стадии с апскейлом латента.": "Fast: picture and its own sound, two stages with a latent upscale.",
     "LTX-2 Community License: бесплатно до $10 млн выручки в год": "LTX-2 Community License: free up to $10M revenue a year",
     "Картинка и звук; умеет снимать под ваш трек — клипы, герои поют песню.":
@@ -121,7 +122,48 @@ def family(c: Card) -> str:
 
 
 def card(model_id: str | None) -> Card:
+    """The card of a STORED model id: an empty one is H3 (a project from before phase 10), an unknown one too (loading
+    old data must not fail). A new choice goes through pick() / offered() instead."""
     return CARDS.get(model_id or DEFAULT, CARDS[DEFAULT])
+
+
+def installed() -> list[str]:
+    """Ids of the offered models whose weights are all there, in the default order (H3, LTX 2.5, LTX 2.3, WAN)."""
+    return [i for i in ORDER if not weights_missing(CARDS[i])]
+
+
+def default() -> str:
+    """The model a NEW project, clip or graph shoots with: the first installed one (H3 -> LTX 2.5 -> LTX 2.3 -> WAN).
+    Nothing installed: H3 as before, so the shot says which files are missing."""
+    return (installed() or [DEFAULT])[0]
+
+
+CLIP_MODEL = "ltx23"   # the model a clip from a song wants: it shoots to the song's track, the singers sing
+
+
+def clip_default() -> str:
+    """The model a NEW clip from a song shoots with: the first installed one that shoots to the track (LTX 2.3), else
+    the first installed one (the song is the clip's sound, the singers don't sing). Nothing installed: LTX 2.3, so
+    the error names the model to install."""
+    have = installed()
+    return next((i for i in have if CARDS[i].track), have[0] if have else CLIP_MODEL)
+
+
+def missing_text(c: Card, missing: list[str]) -> str:
+    """The error for a model whose files are not there: which model to install and where."""
+    files = ", ".join(missing)
+    return i18n.L(f"Нет файлов модели {c.name} ({files}): установите её в «Модели и настройки» → {c.name}",
+                  f"The model {c.name} is not installed (missing {files}): install it in «Models and settings» → {c.name}")
+
+
+def pick(model_id: str | None) -> str:
+    """A new choice: the id asked for, or the default when none was asked (an unknown id stays as it is: offered() says no)."""
+    return model_id or default()
+
+
+def stored(settings: dict) -> str:
+    """The id a stored project shoots with: its settings.video_model, else H3 (before phase 10). Never the default."""
+    return settings.get("video_model") or DEFAULT
 
 
 def offered(model_id: str | None) -> bool:
@@ -184,12 +226,12 @@ def timing_key(c: Card, quality: str, ref: bool = False) -> str:
 
 
 def weights_missing(c: Card) -> list[str]:
-    """The card's weight files the worker would not find. H3's turbo LoRA only for a model without the speed-up inside
-    (TURBO in its name, the Models page says the same)."""
+    """The card's weight files the worker would not find: on this computer, or in ENGINE=remote on the cloud server's
+    disk. H3's turbo LoRA only for a model without the speed-up inside (TURBO in its name, the Models page says the same)."""
     c = shooter(c)
-    from .models_page import find_file
+    from .models_page import has_file
     keys = list(c.keys) + (["H3_TURBO_LORA"] if c.id == "h3" and "turbo" not in config.H3_UNET.lower() else [])
-    return [getattr(config, k) for k in keys if not find_file(k)]
+    return [getattr(config, k) for k in keys if not has_file(k)]
 
 
 # ---------- the prompt for another model ----------
@@ -243,9 +285,16 @@ def _beats(c: Card, beats: list[str]) -> str:
 
 
 def public() -> list[dict]:
-    """The cards for the page (the model picker, «Модели и настройки»)."""
-    return [{"id": c.id, "name": c.name, "short": c.short, "text": text_of(c), "sound": c.sound, "voice": c.voice, "refs": c.refs,
+    """The cards for the page (the model picker, «Модели и настройки»): installed ones first, then the missing ones
+    (the picker offers «Установить» for those); `default` marks the model a new project takes."""
+    dflt = default()
+    out = [{"id": c.id, "name": c.name, "short": c.short, "text": text_of(c), "sound": c.sound, "voice": c.voice, "refs": c.refs,
              "track": c.track, "ends": c.ends, "max_seconds": c.max_seconds, "grid_seconds": c.grid_seconds, "license": license_of(c), "steps": c.steps,
              "sizes": {q: dict(zip(("w", "h"), canvas(16 / 9, mp, c.step))) for q, mp in c.mp.items()}, "mp": c.mp, "step": c.step,
              "per_scene": c.base, "imported": bool(c.shoots_as), "color": c.color,   # an imported model is never offered, only named
              "missing": weights_missing(c)} for c in CARDS.values()]
+    for x in out:
+        x["installed"] = not x["missing"] and not x["imported"]
+        x["default"] = x["id"] == dflt
+    out.sort(key=lambda x: not x["installed"])   # stable: installed first, the rest after
+    return out

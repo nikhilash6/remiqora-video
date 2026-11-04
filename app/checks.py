@@ -422,6 +422,38 @@ def hero_similarity(video: Path, portrait: Path) -> Optional[float]:
         return None
 
 
+def heroes_similarity(video: Path, portraits: list[Path]) -> Optional[float]:
+    """Several heroes in one shot (a film's scene, its «лица»): per portrait the SFace cosine to the likest face of a
+    frame, the median over FACE_AT's frames that show a face; the shot is as like as its least like hero, so a hero
+    missing from the shot (or turned into the other one) fails it. None when no portrait has one face or fewer than
+    FACE_SEEN frames show a face."""
+    try:
+        import cv2
+        refs = []
+        for p in portraits:
+            im = cv2.imread(str(p))
+            a = _face_feature(im) if im is not None else None
+            if a is not None:
+                refs.append(a)
+        if not refs:
+            return None
+        rec = _recognizer()
+        per: list[list[float]] = [[] for _ in refs]
+        for f in frames_at(video):
+            f = np.ascontiguousarray(f)
+            faces = _confident_faces(f)
+            if not faces:
+                continue
+            feats = [rec.feature(rec.alignCrop(f, x)) for x in faces]
+            for k, a in enumerate(refs):
+                per[k].append(max(float(rec.match(a, b, cv2.FaceRecognizerSF_FR_COSINE)) for b in feats))
+        if len(per[0]) < FACE_SEEN:
+            return None
+        return min(float(np.median(v)) for v in per)
+    except Exception:  # noqa: BLE001 - a check is a bonus, never a blocker
+        return None
+
+
 def motion(m: dict) -> Optional[float]:
     """The shot's typical motion: the median frame-to-frame difference (`still` below STILL_DIFF)."""
     return float(np.median(m["diff"])) if len(m["diff"]) else None

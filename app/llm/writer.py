@@ -17,10 +17,11 @@ from typing import Optional
 
 from ..planner import prompts
 from ..planner.grid import SCENE_SECONDS, grid
-from .. import i18n
+from .. import i18n, looks
 from . import client, describe
 
 GENDERS = ["female", "male", "other"]
+KINDS = ["person", "animal", "robot", "creature"]   # rules_v 4: what a cast entry is (a toy is a robot or a creature by sense)
 CAST_COUNT = {"one": (1, 1), "several": (2, 3)}
 NO_MUSIC = "no music, only natural sounds of the scene"
 
@@ -40,11 +41,24 @@ Write so the model can show it:
 - Never: text, signs, letters, logos or screens with writing in the frame; changes of clothing; children or teenagers; names of real people or celebrities.
 - Everyone in the video is an adult; give an explicit age of 21 or older."""
 
+# H3 is optional (its licence excludes some countries), so a NEW plan (`plan["generic"]`) gets a brief that does not name
+# it: what is specific to the model that shoots goes into MODEL_NOTES. A plan written before keeps the text above word
+# for word (and so its answers in the LLM cache: its scenes are never written, and so never shot, again).
+SYSTEM_GENERIC = SYSTEM.replace("made by the AI video model MiniMax H3, scene by scene", "made by an AI video model, scene by scene")
+assert SYSTEM_GENERIC != SYSTEM
+
+
+def generic(plan: Optional[dict]) -> bool:
+    return bool(plan and plan.get("generic"))
+
+
 # A look of bare anatomy («lean build, high cheekbones, expressive features») gave a man's face to every heroine Krea drew
 # (2026-10-29); a name or role in front («Singer - lean build») went into the prompt as it is
 LOOK_RULE = ("A woman's look reads clearly feminine and attractive (a soft, delicate face, gentle features, full lips, long "
              "lashes); a man's clearly masculine. The look starts with the build or the face: never with a name, a role or "
              "a label (\"Singer - ...\").")
+# rules_v 2 (2026-11-03): nothing about how feminine or attractive - the idea's words decide (PEOPLE_FROM_IDEA)
+LOOK_RULE_V2 = "The look starts with the build or the face: never with a name, a role or a label (\"Singer - ...\")."
 
 MODE_RULES = {
     "one": """There is exactly one person in the video: the hero. cast has one entry. Their look (en: build, skin, face, eyes, hair; no clothes there) and outfit (outfit_en) are pasted word for word into every scene by code, so make them specific: 30-60 words, colours and materials. """ + LOOK_RULE + """ In beats write "she" / "he" (or "they"), never repeat the look.
@@ -56,6 +70,41 @@ place_en on a "new" scene: one sentence about the place, light and time of day."
 The whole video is one continuous shot. to_en: in 4-15 words, what the frame shows at the very end of the scene - the next scene starts from exactly that ("a glowing phoenix spreading its wings over the dunes"). Make the scenes flow: each one develops or transforms what the previous ended with.
 place_en of the first scene: one sentence about the very first picture (what is in the frame at second 0), without repeating world; "" on the other scenes.""",
 }
+
+# rules_v 4 (2026-11-03): the hero is the idea's main character - a person, or an animal / creature / toy / robot when the
+# idea names no person («рыжий котенок играет на газоне» got a woman with red hair); then nobody human is in the video
+KIND_RULE = ('Each cast entry has kind: "person", "animal", "robot" or "creature" (a fantasy or cartoon being; a toy is a robot '
+             "or a creature by sense). The hero is whoever the idea is about: when the idea is about an animal, a robot or a "
+             "creature and names no person, the hero is that character and NO person appears in the video at all. A person "
+             "with their pet or robot is one person + one animal / robot. Age and gender are for a person only: for any other "
+             'kind age is 0 and gender is "other" (an animal\'s sex only when the idea says it). en by kind - animal: species or '
+             "breed, size, fur / feathers / scales colour and pattern, eyes, distinctive marks; robot: build and shape, "
+             "materials, colours, lights or eyes, wear and marks; creature: body, skin / fur / scales, colours, eyes, "
+             'distinctive features; 30-60 words, no human words for a non-person. outfit_en is "" unless the idea dresses it. '
+             'The look of a non-person opens with its body shape and how it moves, in plain words ("a small boxy robot on four wheels, no legs, no arms"; '
+             '"a long snake-like dragon with no legs, flying"), and the beats use that way of moving ("rolls", "crawls", "glides", "flies") - never '
+             '"walks", "steps", "hands" or "face" unless it has legs, hands or a face. '
+             'In beats write "it" or its name or kind ("the kitten", "the robot"), never she / he, for a non-person.')
+MODE_RULES_V4 = {
+    "one": """There is exactly one main character in the video: the hero (a person or an animal, see below). cast has one entry. Their look (en: for a person build, skin, face, eyes, hair; no clothes there) and outfit (outfit_en) are pasted word for word into every scene by code, so make them specific: 30-60 words, colours and materials. """ + LOOK_RULE + " " + KIND_RULE + """ In beats write "she" / "he" (or "they") for a person, never repeat the look.
+place_en on a "new" scene: one sentence about the place, light and time of day.""",
+    "several": """There are 2-3 characters (people or animals, see below). cast lists each with the same detail as a hero (look 30-60 words + outfit). """ + LOOK_RULE + " " + KIND_RULE + """ In beats refer to them clearly ("the woman in the red coat", "the older man", "the brown puppy") and keep the same characters through the video.
+who: on every scene, the numbers of the characters visible in it (1 = the first in cast). Only their looks are pasted into that scene's prompt, so a character not listed is not in the frame - list everyone your beats show or mention as present. A "continue" scene usually keeps the characters of the scene before; someone may walk in or out of the frame. Not everyone has to be in every scene.
+place_en on a "new" scene: one sentence about the place, light and time of day.""",
+}
+
+
+def _mode_rules(plan: dict) -> str:
+    """The rules of the plan's people; a live look («Вид») asks for a real person instead of LOOK_RULE's lashes (they
+    drew a doll, 2026-11-02). An older plan: the rules word for word (its answers in the LLM cache)."""
+    rules = (MODE_RULES_V4 if int(plan.get("rules_v") or 0) >= 4 and plan["mode"] in MODE_RULES_V4 else MODE_RULES)[plan["mode"]]
+    live = looks.active(plan) and looks.is_live(plan)
+    v2 = int(plan.get("rules_v") or 0) >= 2   # no «feminine, attractive» (LOOK_RULE_V2, looks.LIVE_RULE_V2)
+    rule = (looks.LIVE_RULE_V2 if v2 else looks.LIVE_RULE) if live else (LOOK_RULE_V2 if v2 else LOOK_RULE)
+    if int(plan.get("rules_v") or 0) >= 4 and live:
+        rule = "For a person: " + rule[:1].lower() + rule[1:]   # an animal is not asked for skin, lashes and a face
+    # a plan written since 2026-11-03: the idea's words for the people right after the look's rule
+    return rules.replace(LOOK_RULE, rule + _rules_people(plan))
 
 
 # ---------- a clip from a song (phase 11; remiqora-video's music writer) ----------
@@ -91,10 +140,12 @@ def _mmss(t: float) -> str:
 
 
 def _clip_line(s: dict) -> str:
-    """A clip's scene for the writer: its time and length, its part of the song, what is sung and how much voice."""
+    """A clip's scene for the writer: its time and length, its part of the song, what is sung and how much voice; a
+    shot kind fixed beforehand (shot_user: the skeleton's, «Песня → клип»'s) - its text must be that kind."""
     sung = " / ".join(x["text"] for x in s.get("sung") or [])
+    fixed = f'; its shot is fixed: "{s["shot"]}"' + (" (no face in it)" if s["shot"] == "insert" else "") if s.get("shot_user") and s.get("shot") else ""
     return (f"scene {s['index'] + 1} ({_mmss(s['start'])}, {grid_seconds(s):.1f} s): {s.get('part', '')}, "
-            f"{'loud' if s.get('loud') else 'quiet'}; " + (f"sung: «{sung}»; voice: {s.get('singing', '')}" if sung else "no singing"))
+            f"{'loud' if s.get('loud') else 'quiet'}; " + (f"sung: «{sung}»; voice: {s.get('singing', '')}" if sung else "no singing") + fixed)
 
 
 def grid_seconds(s: dict) -> float:
@@ -140,8 +191,8 @@ def _clip_brief(plan: dict) -> str:
     return (f"Idea ({client.lang()}): {plan['idea'] or '(no idea: invent a music video that fits the song)'}\n"
             f"The song: «{c.get('name', '')}», {c.get('bpm', 0):.0f} BPM; the video is {plan['seconds']:.0f} s of it, "
             f"{len(plan['scenes'])} scenes.\n"
-            f"Mood: {plan.get('mood') or 'as the song suggests'}.\n"
-            f"The song's parts (times in the video):\n{c.get('map', '')}\n")
+            + (looks.brief(plan) if looks.active(plan) else f"Mood: {plan.get('mood') or 'as the song suggests'}.\n")
+            + f"The song's parts (times in the video):\n{c.get('map', '')}\n")
 
 
 def _scene_schema(mode: str, clip: bool = False, plan: Optional[dict] = None) -> dict:
@@ -161,8 +212,9 @@ def _scene_schema(mode: str, clip: bool = False, plan: Optional[dict] = None) ->
     return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
 
 
-def _cast_item() -> dict:
-    props = {"gender": {"type": "string", "enum": GENDERS}, "age": {"type": "integer"}, "en": {"type": "string"},
+def _cast_item(plan: Optional[dict] = None) -> dict:
+    props = {"kind": {"type": "string", "enum": KINDS}} if plan and int(plan.get("rules_v") or 0) >= 4 else {}
+    props |= {"gender": {"type": "string", "enum": GENDERS}, "age": {"type": "integer"}, "en": {"type": "string"},
              "outfit_en": {"type": "string"}, "ru": {"type": "string"}, "outfit_ru": {"type": "string"}}
     return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
 
@@ -173,7 +225,7 @@ def _plan_schema(mode: str, n: int, cast_count: Optional[tuple[int, int]], plan:
         world = {"en": {"type": "string"}, "ru": {"type": "string"}}
         props["world"] = {"type": "object", "properties": world, "required": list(world), "additionalProperties": False}
     elif cast_count:
-        props["cast"] = {"type": "array", "items": _cast_item(), "minItems": cast_count[0], "maxItems": cast_count[1]}
+        props["cast"] = {"type": "array", "items": _cast_item(plan), "minItems": cast_count[0], "maxItems": cast_count[1]}
     props["scenes"] = {"type": "array", "items": _scene_schema(mode, plan=plan), "minItems": n, "maxItems": n}
     return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
 
@@ -181,14 +233,15 @@ def _plan_schema(mode: str, n: int, cast_count: Optional[tuple[int, int]], plan:
 def _system(plan: dict) -> str:
     """The writer's rules; a clip's scenes are not 5 s each, nor are a 10 s grid's (plan.scene_seconds: the H3 rules
     stay word for word, and so its answers in the LLM cache). A plan of formula 2 (prompts.formula) gets its rules too."""
+    base = SYSTEM_GENERIC if generic(plan) else SYSTEM
     if not plan.get("clip"):
         n = float(plan.get("scene_seconds") or SCENE_SECONDS)
         if n == SCENE_SECONDS:
-            return SYSTEM + _rules_v2(plan)
-        return SYSTEM.replace("Every scene is exactly 5 seconds; the model",
+            return base + _rules_v2(plan)
+        return base.replace("Every scene is exactly 5 seconds; the model",
                               f"Every scene is {n:g} seconds (the last one may be shorter; each scene's length is given with it); the model").replace(
             "Five seconds hold about three small beats", f"{n:g} seconds hold up to three beats, each given its time") + _rules_v2(plan)
-    return SYSTEM.replace("Every scene is exactly 5 seconds; the model", "Every scene has its own length, given with it; the model").replace(
+    return base.replace("Every scene is exactly 5 seconds; the model", "Every scene has its own length, given with it; the model").replace(
         "Five seconds hold about three small beats", "A scene holds about one small beat for every 2 seconds") + _rules_v2(plan)
 
 
@@ -198,14 +251,54 @@ CONTINUE_RULE = ('\n- A "continue" scene keeps the framing of the scene it goes 
                  "to get closer use the camera push_in, to get wider pull_back.")
 
 
+NO_TOOLS_RULE = ("\n- Never name a video model, an AI tool or software anywhere in style_en or the beats (no product or brand names, "
+                 'no "Shot on <model>"): style_en says only how it looks - light, lens, palette, grain.')
+
+
 def _rules_v2(plan: dict) -> str:
-    return CONTINUE_RULE if prompts.formula(plan) >= 2 else ""
+    return (CONTINUE_RULE if prompts.formula(plan) >= 2 else "") + (NO_TOOLS_RULE if int(plan.get("rules_v") or 0) >= 3 else "")
+
+
+# A plan written since 2026-11-03 (`rules_v`, new_plan / new_clip_plan): the people's age and look follow the idea's own
+# words - «девушка едет в ночном трамвае» got a stern 32-year-old twice, once with this rule at the end of the system
+# text: it stands next to the cast's rules (_mode_rules), where the look is written. Nothing fixed: the idea's word
+# decides, nothing said - the writer does. An older plan keeps its brief word for word (its LLM-cache answers).
+RULES_V = 5   # 2: no «feminine, attractive» in the people's rules (LOOK_RULE_V2) and in Krea's portrait (hero.who_of)
+              # 3: no model / tool names in the style (NO_TOOLS_RULE, looks.no_tools); a singer's calm mouth (SING_CALM, frames.SING_CALM)
+              # 4: the hero may be an animal / creature / toy / robot (KIND_RULE, cast kind, hero.who_of, frames' «Only this one ...»)
+              # 5: a clip with a non-person cast: the singer is that kind, no humans from the lyrics (CLIP_NONPERSON,
+              #    prompts.human_in_nonperson_cast); looks.unphoto strips the adjective before «grain» too
+PEOPLE_FROM_IDEA = (" The idea's own words for a person set their age and look: read them before choosing (in the "
+                    "user's language: «девушка» - a girl, a young woman; «женщина» - a woman; «парень» - a young man; "
+                    "«бабушка» - an old woman); when the idea says nothing about them, choose freely.")
+
+
+PEOPLE_FROM_IDEA_V4 = (" For a person (kind person only), the idea's own words set their age and look: read them before choosing "
+                       "(in the user's language: «девушка» - a girl, a young woman; «женщина» - a woman; «парень» - a young man; "
+                       "«бабушка» - an old woman); when the idea says nothing about them, choose freely. An animal's look comes "
+                       "from the idea's words and its species, not from this.")
+
+
+def _rules_people(plan: dict) -> str:
+    if int(plan.get("rules_v") or 0) >= 4 and plan.get("mode") != "none":
+        return PEOPLE_FROM_IDEA_V4
+    return PEOPLE_FROM_IDEA if plan.get("rules_v") and plan.get("mode") != "none" else ""
+
+
+def _idea_only(idea: str) -> str:
+    """The user's idea without the shot plan «Песня → клип» adds to it (autopilot.PLAN_HINT)."""
+    return idea.split(" Shot plan:")[0].strip()
 
 
 # Formula 2: a singing scene's start frame is drawn from its first beat (frames.prompt_of), and LTX sings surely only
 # from a face to the camera with the mouth open
 SING_FIRST_BEAT = ('\n- The first beat of a "sing" scene faces the camera, eyes open, singing: never in profile, never '
                    "with the eyes closed or the head thrown back.")
+
+# rules_v 3: a wide mouth drew a grimace on the stills - the first beat sings softly, the lips only follow the words
+SING_FIRST_BEAT_CALM = ('\n- The first beat of a "sing" scene faces the camera, eyes open, singing softly: the lips move with the words, '
+                        "the mouth only slightly open, the face calm; never in profile, never with the eyes closed or the head "
+                        "thrown back, never a wide-open mouth or a shout.")
 
 
 # Formula 3: LTX sang from the frame as a still picture (one body movement in time keeps it alive), and waving arms or
@@ -217,11 +310,24 @@ HANDS_RULE = ('\n- In "sing" and "perform" scenes the hands stay empty and below
               "shoulders, the hair in the wind, a step toward the camera.")
 
 
+# rules_v 5: the lyrics are mood, not a description of the singer (2026-11-03: a robot vacuum's song about sunglasses and a
+# rolled-down top turned scenes 1-4 into a young woman on a balcony)
+CLIP_NONPERSON = ('\n- The cast has no person: the character of "who" N is exactly the kind in cast (a robot, an animal, a creature), in '
+                  'EVERY scene, "sing" scenes too. It "sings" in its own way - lights pulsing, rolling, spinning, a nod, a body '
+                  "movement in time with the beat - and never grows a human face, body or clothes. The sung words are the mood of "
+                  "the scene, never a description of who sings: if they speak of sunglasses, a top, a dress, lips or a girl, show the "
+                  "mood in the place, the light and the character's own movement. No human appears in any scene (no woman, man, "
+                  "girl or boy) - nobody who is not in cast.")
+
+
 def _clip_rules(plan: dict) -> str:
     rules = CLIP_RULES[plan["mode"] == "none"]
+    if int(plan.get("rules_v") or 0) >= 5 and prompts.nonperson_cast(plan):
+        rules += CLIP_NONPERSON
     if plan["mode"] == "none" or prompts.formula(plan) < 2:
         return rules
-    return rules + SING_FIRST_BEAT + (SING_BODY + HANDS_RULE if prompts.formula(plan) >= 3 else "")
+    first = SING_FIRST_BEAT_CALM if int(plan.get("rules_v") or 0) >= 3 else SING_FIRST_BEAT
+    return rules + first + (SING_BODY + HANDS_RULE if prompts.formula(plan) >= 3 else "")
 
 
 def cameras(plan: Optional[dict]) -> list[str]:
@@ -233,13 +339,15 @@ def cameras(plan: Optional[dict]) -> list[str]:
 
 def _hand_ok(plan: dict) -> bool:
     """Formula 3's handheld camera for singers: a clip in live action (the plan's style once it is written)."""
-    return bool(plan.get("clip")) and not prompts.stylized(plan)
+    return bool(plan.get("clip")) and not prompts.stylized(plan) and not (looks.active(plan) and not looks.is_live(plan))
 
 
 # Phase 10: the writer knows the model that shoots (plan["video"], the project's video model; none or H3 - the brief
 # as it always was, so H3's answers stay in the LLM cache). What each does well and badly, from their makers' guides
 # and our shots.
 MODEL_NOTES = {
+    "h3": "The video is shot by MiniMax H3. It makes the picture and the sound together from your text and speaks the lines in "
+          "Russian with lip movement; it keeps a face from a photo (Ref2VA).",
     "ltx25": "The video is shot by LTX-2.5 (Lightricks), not H3. It shows one clear action per beat well and moves the camera "
              "smoothly; it holds no face from words alone from scene to scene, so give the people few, strong visual traits "
              "and repeat them in beats; fast action and crowds smear. It speaks the lines in Russian with lip movement.",
@@ -253,7 +361,10 @@ MODEL_NOTES = {
 
 
 def _model_note(plan: dict) -> str:
-    note = MODEL_NOTES.get("wan5b" if str(plan.get("video")).startswith("wan5b") else plan.get("video") or "h3")
+    key = "wan5b" if str(plan.get("video")).startswith("wan5b") else plan.get("video") or "h3"
+    if key == "h3" and not generic(plan):
+        return ""   # an older plan: the brief as it always was, H3's answers stay in the LLM cache
+    note = MODEL_NOTES.get(key)
     return f"Video model: {note}\n" if note else ""
 
 
@@ -263,9 +374,9 @@ def _brief(plan: dict) -> str:
     music = plan.get("music") or NO_MUSIC
     length = (f"Length: {len(plan['scenes'])} scenes x {SCENE_SECONDS} s = {len(plan['scenes']) * SCENE_SECONDS} s.\n" if not plan.get("scene_seconds")
               else f"Length: {len(plan['scenes'])} scenes, {plan['seconds']:g} s in all (each scene's seconds are given with it).\n")
-    return (f"Idea ({client.lang()}): {plan['idea']}\n" + length +
-            f"Mood: {plan.get('mood') or 'as the idea suggests'}.\n"
-            f"Music: {music}. audio_en describes the music and the overall soundscape of the whole video in one sentence.\n"
+    return (f"Idea ({client.lang()}): {plan['idea']}\n" + length
+            + (looks.brief(plan) if looks.active(plan) else f"Mood: {plan.get('mood') or 'as the idea suggests'}.\n")
+            + f"Music: {music}. audio_en describes the music and the overall soundscape of the whole video in one sentence.\n"
             + _model_note(plan))
 
 
@@ -420,10 +531,10 @@ async def _fix_looks(llm: client.Client, plan: dict, seed: int) -> None:
         props["world"] = {"type": "object", "properties": {"en": {"type": "string"}, "ru": {"type": "string"}},
                           "required": ["en", "ru"], "additionalProperties": False}
     elif others:
-        props["cast"] = {"type": "array", "items": _cast_item(), "minItems": len(others), "maxItems": len(others)}
+        props["cast"] = {"type": "array", "items": _cast_item(plan), "minItems": len(others), "maxItems": len(others)}
     schema = {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
     now = {"style_en": plan.get("style_en", ""), **({"world": plan.get("world")} if mode == "none" else {"cast": others})}
-    user = (_brief(plan) + "\n" + MODE_RULES[mode] + "\n\nNow:\n" + json.dumps(now, ensure_ascii=False, indent=1)
+    user = (_brief(plan) + "\n" + _mode_rules(plan) + "\n\nNow:\n" + json.dumps(now, ensure_ascii=False, indent=1)
             + "\n\nProblems to fix:\n" + "\n".join(prompts.cast_problems(plan) + prompts.style_problems(plan))
             + "\n\nRewrite these fields so they pass; keep who the characters are and what the video looks like.")
     d = await llm.chat_json(_system(plan), user, schema, temperature=0.6, seed=seed, max_tokens=1200)
@@ -433,6 +544,7 @@ async def _fix_looks(llm: client.Client, plan: dict, seed: int) -> None:
     elif others and d.get("cast"):
         plan["cast"] = keep + list(d["cast"])
         prompts.fix_cast(plan)
+    looks.apply(plan)   # «Вид»: style_en from the look, the heroes by its rules
 
 
 async def _rewrite(llm: client.Client, plan: dict, indices: list[int], why: dict[int, list[str]], how: str, seed: int,
@@ -450,7 +562,7 @@ async def _rewrite(llm: client.Client, plan: dict, indices: list[int], why: dict
     current = "\n".join(f"scene {i + 1} {label}: " + json.dumps({k: plan["scenes"][i].get(k) for k in keys},
                                                              ensure_ascii=False) for i in sorted(want))
     problems = "\n".join(f"scene {i + 1}: " + "; ".join(p) for i, p in why.items() if p)
-    user = (_brief(plan) + "\n" + MODE_RULES[plan["mode"]] + (("\n" + _clip_rules(plan)) if plan.get("clip") else "")
+    user = (_brief(plan) + "\n" + _mode_rules(plan) + (("\n" + _clip_rules(plan)) if plan.get("clip") else "")
             + "\n\n" + _locks_text(plan)
             + f"\nStyle: {plan.get('style_en', '')}\n\n" + ("The whole video:\n" + _grid_text(plan) if _near(plan, want) is None
                else f"The video has {len(plan['scenes'])} scenes; around these ones:\n" + _grid_text(plan, _near(plan, want)))
@@ -518,12 +630,13 @@ def new_plan(idea: str, seconds: float, mode: str, mood: str = "", music: str = 
     for LTX; the plan then keeps it (`scene_seconds`: a scene added later gets it, the writer is told)."""
     slots = grid(seconds, mode, scene_seconds)
     plan = {"idea": idea.strip(), "seconds": slots[-1].end, "mode": mode, "mood": mood, "music": music, "lang": i18n.text(),
-            "seed": seed, "model": model, "title_ru": "", "style_en": "", "audio_en": "", "prompt_v": prompts.PROMPT_V,
+            "seed": seed, "model": model, "title_ru": "", "style_en": "", "audio_en": "", "prompt_v": prompts.PROMPT_V, "rules_v": RULES_V,
             "scenes": [{**s.public(), "ru": "", "beats_en": [], "framing": "medium", "camera": "static", "sound_en": "",
                         "place_en": "", "to_en": "", "locked": False, "source": "", "status": "", "problems": [], "prompt": ""}
                        for s in slots]}
     if scene_seconds != SCENE_SECONDS:
         plan["scene_seconds"] = scene_seconds
+    plan["generic"] = True   # the writer's brief does not name H3 (SYSTEM_GENERIC; the model's notes: MODEL_NOTES)
     if mode == "none":
         plan["world"] = {"en": "", "ru": ""}
     else:
@@ -540,21 +653,33 @@ async def write(plan: dict, photo: Optional[Path] = None, folder: Optional[Path]
     if n > LONG:
         return await write_long(plan, photo, folder)
     async with client.session(plan.get("model")) as llm:
+        await looks.decide(llm, plan)   # «Решит сценарист»: a delivery and a look picked first
         if folder:
             await describe_starts(llm, plan, folder)
         if photo and mode != "none" and not plan.get("cast"):
             h = await describe.describe_with(llm, photo)
             plan["cast"] = [{**{k: h.get(k, "") for k in ("gender", "age", "en", "outfit_en", "ru", "outfit_ru")}, "from_photo": True}]
+        own = (plan.get("cast") or [None])[0] if mode != "none" else None
+        if own and own.get("from_user") and own.get("ru_dirty") and int(plan.get("rules_v") or 0) >= 4:   # «Герой своими словами»
+            await rewrite_looks(plan, [0])
         hero = (plan.get("cast") or [None])[0] if mode != "none" else None
         cast_count = None
         if mode == "one" and not hero:
             cast_count = CAST_COUNT["one"]
         elif mode == "several":
             cast_count = (1, 2) if hero else CAST_COUNT["several"]
-        user = _brief(plan) + "\n" + MODE_RULES[mode]
+        # the graph's other heroes («Кино»): fixed too - the cast is exactly them, so the beats and `who` name the right people
+        more = [c for c in (plan.get("cast") or [])[1:3] if (c.get("en") or "").strip()] if mode == "several" and hero else []
+        if more:
+            cast_count = (len(more), len(more))
+        user = _brief(plan) + "\n" + _mode_rules(plan)
         if hero:
-            user += ("\n\nCharacter 1 is fixed from the user's photo, do not change or repeat it" + (", list only the others in cast" if mode == "several" else "")
+            user += ("\n\nCharacter 1 is fixed from the user's " + ("own description" if hero.get("from_user") else "photo") + ", do not change or repeat it" + (", list only the others in cast" if mode == "several" else "")
                      + f":\n{hero['en']} Outfit: {hero.get('outfit_en', '')}")
+            if more:
+                user += (f"\nThe others are fixed too: there are exactly {len(more) + 1} people, your cast lists only these {len(more)}, "
+                         "in this order, with these looks:\n" + "\n".join(f"Character {k}: {c['en']} Outfit: {c.get('outfit_en', '')}"
+                                                                 for k, c in enumerate(more, 2)))
         user += "\n\nThe scenes (fixed, write exactly one entry per line, in order):\n" + _grid_text(plan)
         d = await llm.chat_json(_system(plan), user, _plan_schema(mode, n, cast_count, plan), temperature=0.8, seed=plan["seed"],
                                 max_tokens=420 * n + 900)
@@ -565,6 +690,7 @@ async def write(plan: dict, photo: Optional[Path] = None, folder: Optional[Path]
         elif cast_count:
             plan["cast"] = ([hero] if hero else []) + list(d.get("cast") or [])
         prompts.fix_cast(plan)
+        looks.apply(plan)   # «Вид»: style_en from the look, the heroes by its rules
         for i, s in enumerate(d.get("scenes", [])[:n]):
             _take_scene(plan, i, s)
         await _fix_round(llm, plan, plan["seed"])
@@ -580,7 +706,7 @@ en - 1-2 English sentences, what happens in it, concrete and visual; ru - the sa
 (one sentence: place, light, time of day). Change places, scale and rhythm between chapters like a film editor would."""
 
 
-def _outline_schema(mode: str, chains: int, cast_count: Optional[tuple[int, int]]) -> dict:
+def _outline_schema(mode: str, chains: int, cast_count: Optional[tuple[int, int]], plan: Optional[dict] = None) -> dict:
     ch = {"en": {"type": "string"}, "ru": {"type": "string"}, "place_en": {"type": "string"}}
     props: dict = {"title_ru": {"type": "string"}, "style_en": {"type": "string"}, "audio_en": {"type": "string"},
                    "chapters": {"type": "array", "items": {"type": "object", "properties": ch, "required": list(ch),
@@ -589,7 +715,7 @@ def _outline_schema(mode: str, chains: int, cast_count: Optional[tuple[int, int]
         world = {"en": {"type": "string"}, "ru": {"type": "string"}}
         props["world"] = {"type": "object", "properties": world, "required": list(world), "additionalProperties": False}
     elif cast_count:
-        props["cast"] = {"type": "array", "items": _cast_item(), "minItems": cast_count[0], "maxItems": cast_count[1]}
+        props["cast"] = {"type": "array", "items": _cast_item(plan), "minItems": cast_count[0], "maxItems": cast_count[1]}
     return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
 
 
@@ -602,6 +728,7 @@ async def write_long(plan: dict, photo: Optional[Path] = None, folder: Optional[
     mode, n = plan["mode"], len(plan["scenes"])
     chains = sorted({s["chain"] for s in plan["scenes"]})
     async with client.session(plan.get("model")) as llm:
+        await looks.decide(llm, plan)   # «Решит сценарист»: a delivery and a look picked first
         if folder:
             await describe_starts(llm, plan, folder)
         if photo and mode != "none" and not plan.get("cast"):
@@ -617,12 +744,12 @@ async def write_long(plan: dict, photo: Optional[Path] = None, folder: Optional[
         for c in chains:
             idx = [s["index"] for s in plan["scenes"] if s["chain"] == c]
             spans.append((c, idx[0], idx[-1]))
-        user = (_brief(plan) + "\n" + MODE_RULES[mode] + "\n\n" + OUTLINE_RULES
+        user = (_brief(plan) + "\n" + _mode_rules(plan) + "\n\n" + OUTLINE_RULES
                 + f"\n\nThe film has {n} scenes in {len(chains)} chains:\n"
                 + "\n".join(f"chapter {c + 1}: scenes {a + 1}-{b + 1} ({sum(grid_seconds(plan['scenes'][i]) for i in range(a, b + 1)):g} s)" for c, a, b in spans))
         if hero:
             user += (f"\n\nCharacter 1 is fixed from the user's photo, do not change it:\n{hero['en']} Outfit: {hero.get('outfit_en', '')}")
-        d = await llm.chat_json(_system(plan), user, _outline_schema(mode, len(chains), cast_count), temperature=0.8,
+        d = await llm.chat_json(_system(plan), user, _outline_schema(mode, len(chains), cast_count, plan), temperature=0.8,
                                 seed=plan["seed"], max_tokens=140 * len(chains) + 1600)
         for k in ("title_ru", "style_en", "audio_en"):
             plan[k] = str(d.get(k, "")).strip()
@@ -631,6 +758,7 @@ async def write_long(plan: dict, photo: Optional[Path] = None, folder: Optional[
         elif cast_count:
             plan["cast"] = ([hero] if hero else []) + list(d.get("cast") or [])
         prompts.fix_cast(plan)
+        looks.apply(plan)   # «Вид»: style_en from the look, the heroes by its rules
         got = d.get("chapters") or []
         plan["outline"] = [{"chain": c, "first": a, "last": b, **{k: str((got[k_i] if k_i < len(got) else {}).get(k, "")).strip()
                                                                     for k in ("en", "ru", "place_en")}}
@@ -685,7 +813,7 @@ def new_clip_plan(idea: str, mode: str, mood: str, song_info: dict, slots: list[
             s["chapter"] = k
     plan = {"idea": idea.strip(), "seconds": round(t, 3), "mode": mode, "mood": mood, "music": "", "seed": seed, "model": model, "lang": i18n.text(),
             "title_ru": "", "style_en": "", "audio_en": "", "no_music": True, "clip": {**song_info}, "scenes": scenes,
-            "prompt_v": prompts.PROMPT_V}
+            "prompt_v": prompts.PROMPT_V, "generic": True, "rules_v": RULES_V}
     plan["clip"]["map"] = _song_map(plan)
     from ..planner.clip import PREROLL
     plan["clip"]["preroll"] = PREROLL   # a new clip only: its scenes from a picture are shot longer, their warm-up cut (render.preroll)
@@ -710,8 +838,8 @@ def _song_map(plan: dict) -> str:
 TREATMENT_RULES = """First write the TREATMENT of the music video: format_en - one or two sentences: the format (performance, story, metaphor or a mix of performance and story), the palette and light, and one visual motif that grows through the video (a spark in the verse becomes a fire in the chorus); then one chapter per part of the song, in order: en - 1-2 English sentences, what happens in this part, concrete and visual, the strongest images on the chorus and the loud parts; ru - the same in Russian; place_en - where (one sentence: place, light, time of day). Keep to 2-3 places in the whole video and return to them."""
 
 
-def _treatment_schema(mode: str, chapters: int, cast_count: Optional[tuple[int, int]]) -> dict:
-    s = _outline_schema(mode, chapters, cast_count)
+def _treatment_schema(mode: str, chapters: int, cast_count: Optional[tuple[int, int]], plan: Optional[dict] = None) -> dict:
+    s = _outline_schema(mode, chapters, cast_count, plan)
     s["properties"]["format_en"] = {"type": "string"}
     s["required"] = list(s["properties"])
     return s
@@ -742,6 +870,7 @@ async def write_clip(plan: dict, photo: Optional[Path] = None, folder: Optional[
     todo = [i for i, s in enumerate(scenes) if i not in mine and not prompts.is_written(s)]
     first = not plan.get("outline")
     async with client.session(plan.get("model")) as llm:
+        await looks.decide(llm, plan)   # «Решит сценарист»: a delivery and a look picked first
         if folder:
             await describe_starts(llm, plan, folder)
         if photo and mode != "none" and not plan.get("cast"):
@@ -757,19 +886,21 @@ async def write_clip(plan: dict, photo: Optional[Path] = None, folder: Optional[
                 cast_count = CAST_COUNT["one"]
             elif mode == "several":
                 cast_count = (1, 2) if hero else CAST_COUNT["several"]
-            user = (_brief(plan) + "\n" + MODE_RULES[mode] + "\n" + _clip_rules(plan) + "\n\n" + TREATMENT_RULES
+            user = (_brief(plan) + "\n" + _mode_rules(plan) + "\n" + _clip_rules(plan) + "\n\n" + TREATMENT_RULES
                     + (f"\n{IDEA_AS_IS}" if plan["clip"].get("story") == "idea" else "")
                     + f"\n\nThe parts ({len(chapters)} chapters, in order):\n"
                     + "\n".join(f"chapter {k + 1}: {_mmss(c['start'])}-{_mmss(c['end'])}, scenes {c['first'] + 1}-{c['last'] + 1}"
                                 for k, c in enumerate(chapters)))
             if mode == "one" or mode == "several":
                 user += "\nCharacter 1 is the singer of the song."
+                if _rules_people(plan) and not hero and plan.get("idea"):   # the idea's words next to the cast it decides
+                    user += f" Their age and look follow what the idea says about them: «{_idea_only(plan['idea'])}»."
             if hero:
                 user += (f"\n\nCharacter 1 is fixed, do not change it:\n{hero['en']} Outfit: {hero.get('outfit_en', '')}")
             if mine:   # the user's own scenes: the story goes through them
                 user += ("\n\nThe user wrote these scenes themselves; the treatment must lead to them:\n"
                          + "\n".join(f"scene {i + 1}: {scenes[i]['ru']}" for i in sorted(mine)))
-            d = await llm.chat_json(_system(plan), user, _treatment_schema(mode, len(chapters), cast_count), temperature=0.8,
+            d = await llm.chat_json(_system(plan), user, _treatment_schema(mode, len(chapters), cast_count, plan), temperature=0.8,
                                     seed=plan["seed"], max_tokens=160 * len(chapters) + 1800)
             for k in ("title_ru", "style_en", "audio_en"):
                 plan[k] = str(d.get(k, "")).strip()
@@ -779,6 +910,7 @@ async def write_clip(plan: dict, photo: Optional[Path] = None, folder: Optional[
             elif cast_count:
                 plan["cast"] = ([hero] if hero else []) + list(d.get("cast") or [])
             prompts.fix_cast(plan)
+            looks.apply(plan)   # «Вид»: style_en from the look, the heroes by its rules
             got = d.get("chapters") or []
             plan["outline"] = [{"chain": k, "first": c["first"], "last": c["last"],
                                 **{f: str((got[k] if k < len(got) else {}).get(f, "")).strip() for f in ("en", "ru", "place_en")}}
@@ -807,7 +939,8 @@ async def write_clip(plan: dict, photo: Optional[Path] = None, folder: Optional[
             scenes[i].update(ru=ru, ru_dirty=False, source="user", locked=True)
         from ..planner.clip import hand_held, vary_cameras
         # a written or the user's scene keeps its camera (and its shot)
-        vary_cameras([scenes[i] for i in todo], prompts.formula(plan) >= 3 and _hand_ok(plan))
+        vary_cameras([scenes[i] for i in todo], prompts.formula(plan) >= 3 and _hand_ok(plan),
+                     looks.delivery_of(plan)["cameras"] if looks.active(plan) else None)   # «Подача»'s cameras
         await _fix_round(llm, plan, plan["seed"], only=None if first and not mine else set(todo) | set(typed))
         for i, ru in typed.items():   # the fixing round may have rewritten it
             scenes[i]["ru"] = ru
@@ -826,6 +959,30 @@ glasses, earrings, makeup). outfit_en: clothes, shoes and accessories, 10-30 wor
 words, no feelings, no names. Keep everything the user wrote; add only plausible visual detail the Russian leaves open.
 """ + LOOK_RULE
 
+LOOKS_SYSTEM_GENERIC = LOOKS_SYSTEM.replace("for the video model MiniMax H3, from", "for an AI video model, from")
+assert LOOKS_SYSTEM_GENERIC != LOOKS_SYSTEM
+
+
+def _who_line(c: dict, k: int) -> str:
+    if c.get("kind") in ("animal", "robot", "creature"):   # rules_v 4
+        return f"{c['kind'].capitalize()} {k + 1}.\n"
+    if c.get("kind") and not c.get("age"):   # rules_v 4: a person the user described, age not said
+        return f"Person {k + 1}: {c.get('gender', '')}.\n"
+    return f"Person {k + 1}: {c.get('gender', '')}, {c.get('age', '')} years old.\n"
+
+
+def looks_system(plan: Optional[dict]) -> str:
+    """The system text the user's own words about the people are put into English with: rules_v 2 without LOOK_RULE's
+    «feminine, attractive»."""
+    s = LOOKS_SYSTEM_GENERIC if generic(plan) else LOOKS_SYSTEM
+    s = s.replace(LOOK_RULE, LOOK_RULE_V2) if plan and int(plan.get("rules_v") or 0) >= 2 else s
+    if plan and int(plan.get("rules_v") or 0) >= 4:   # an entry may be an animal: its look is the species, fur and marks
+        s += (" An entry that is an animal, a robot or a creature is not a person: its en is the species / breed or the kind of "
+              "machine or being, size or shape, fur / feathers / scales or materials, colours, eyes or lights and marks (no "
+              "human words); its outfit_en stays empty unless the user dressed it. Open en with its body shape and how it moves (wheels, "
+              'legs, wings), and say what it does not have when it matters ("no legs, no arms").')
+    return s
+
 # a small model at times starts its answer with the rule it was given: «body and face only, 30-60 words: Athletic build...»
 # (a 24B model) - and fix_cast then wrote «a 28-year-old woman with body and face only, 30-60 words: ...»
 _ECHO = re.compile(r"^\s*(?:(?:outfit_)?en\s*:\s*)?[^:.]{0,70}\b\d+\s*-\s*\d+\s+words\s*:\s*", re.I)
@@ -834,18 +991,25 @@ WORLD_SYSTEM = """You write the English "world" of a video without people for th
 Russian: the place and its look (setting, materials, palette, light), 25-60 words, concrete visual words. It is pasted
 word for word into every scene. No people."""
 
+WORLD_SYSTEM_GENERIC = WORLD_SYSTEM.replace("for the video model MiniMax H3, from the user's", "for an AI video model, from the user's")
+assert WORLD_SYSTEM_GENERIC != WORLD_SYSTEM
 
-async def translate_look(ru: str, gender: str = "", age: Optional[int] = None, model_id: Optional[str] = None) -> dict:
+
+async def translate_look(ru: str, gender: str = "", age: Optional[int] = None, model_id: Optional[str] = None, kind: str = "person") -> dict:
     """A graph's Hero written in Russian («Перевести на английский»): its English look and outfit, by the rules a
     storyboard's cast is written with (LOOKS_SYSTEM). Only by the button."""
     client.use_lang(i18n.text_name())   # the texts' language (i18n)
     schema = {"type": "object", "properties": {"en": {"type": "string"}, "outfit_en": {"type": "string"}},
               "required": ["en", "outfit_en"], "additionalProperties": False}
     who = ", ".join(x for x in (gender, f"{max(prompts.MIN_AGE, int(age))} years old" if age else "") if x) or "an adult"
+    system, head = LOOKS_SYSTEM_GENERIC, f"Person 1: {who}."
+    if kind in ("animal", "robot", "creature"):   # a graph hero that is not a person (rules_v 4's wording)
+        system = looks_system({"rules_v": RULES_V, "generic": True})
+        head = f"{kind.capitalize()} 1."
     async with client.session(model_id) as llm:
-        d = await llm.chat_json(LOOKS_SYSTEM, f"Person 1: {who}.\n  look and outfit ({client.lang()}): {ru.strip()}\n\nAnswer with people in the same order.",
+        d = await llm.chat_json(system, f"{head}\n  look and outfit ({client.lang()}): {ru.strip()}\n\nAnswer with people in the same order.",
                                 {"type": "object", "properties": {"people": {"type": "array", "items": schema, "minItems": 1, "maxItems": 1}},
-                                 "required": ["people"], "additionalProperties": False}, temperature=0.3, seed=1, max_tokens=800)
+                                 "required": ["people"], "additionalProperties": False}, temperature=0.3, seed=1, max_tokens=800, step="cast")
         got = (d.get("people") or [{}])[0]
         # a small model writes the outfit into the look too ("... glasses. outfit_en: Dark blue ..."): the look stops there
         en = re.split(r"\s*\boutfit(?:_en)?\s*:", str(got.get("en", "")), maxsplit=1, flags=re.I)[0].strip()
@@ -862,8 +1026,8 @@ async def rewrite_looks(plan: dict, indices: Optional[list[int]] = None, seed: O
         if plan["mode"] == "none":
             w = plan.get("world") or {}
             schema = {"type": "object", "properties": {"en": {"type": "string"}}, "required": ["en"], "additionalProperties": False}
-            d = await llm.chat_json(WORLD_SYSTEM, f"Idea: {plan.get('idea', '')}\nThe world ({client.lang()}): {w.get('ru', '')}", schema,
-                                    temperature=0.4, seed=seed, max_tokens=600)
+            d = await llm.chat_json(WORLD_SYSTEM_GENERIC if generic(plan) else WORLD_SYSTEM, f"Idea: {plan.get('idea', '')}\nThe world ({client.lang()}): {w.get('ru', '')}", schema,
+                                    temperature=0.4, seed=seed, max_tokens=600, step="cast")
             plan["world"] = {**w, "en": str(d.get("en", "")).strip() or w.get("en", ""), "ru_dirty": False}
         else:
             cast = plan.get("cast") or []
@@ -873,15 +1037,16 @@ async def rewrite_looks(plan: dict, indices: Optional[list[int]] = None, seed: O
             schema = {"type": "object", "properties": {"people": {"type": "array", "items": item, "minItems": len(want), "maxItems": len(want)}},
                       "required": ["people"], "additionalProperties": False}
             user = (f"Idea ({client.lang()}): {plan.get('idea', '')}\nStyle: {plan.get('style_en', '')}\n\n"
-                    + "\n".join(f"Person {k + 1}: {cast[i].get('gender', '')}, {cast[i].get('age', '')} years old.\n"
+                    + "\n".join(_who_line(cast[i], k) +
                                 f"  look ({client.lang()}): {cast[i].get('ru', '')}\n  outfit ({client.lang()}): {cast[i].get('outfit_ru', '')}"
                                 for k, i in enumerate(want))
                     + "\n\nAnswer with people in the same order.")
-            d = await llm.chat_json(LOOKS_SYSTEM, user, schema, temperature=0.4, seed=seed, max_tokens=500 * len(want) + 200)
+            d = await llm.chat_json(looks_system(plan), user, schema, temperature=0.4, seed=seed, max_tokens=500 * len(want) + 200, step="cast")
             for i, got in zip(want, d.get("people", [])):
                 cast[i].update(en=_ECHO.sub("", str(got.get("en", ""))).strip() or cast[i].get("en", ""),
                                outfit_en=_ECHO.sub("", str(got.get("outfit_en", ""))).strip(), ru_dirty=False)
             prompts.fix_cast(plan)
+            looks.apply(plan)   # «Вид»: style_en from the look, the heroes by its rules
         check(plan)
         for s in plan["scenes"]:
             s["status"] = "check" if s["problems"] else "ok"
@@ -1040,12 +1205,18 @@ def _lines_schema(people: list[int]) -> dict:
         "required": ["who", "text", "how"]}}}, "required": ["lines"]}
 
 
-def _lines_system(seconds: int) -> str:
-    """The rules for a scene of this length: 2 words a second (5 s: 10, as for the storyboard)."""
+LINES_SYSTEM_GENERIC = LINES_SYSTEM.replace("The video model MiniMax H3 speaks", "The video model speaks")
+assert LINES_SYSTEM_GENERIC != LINES_SYSTEM
+
+
+def _lines_system(seconds: int, plan: Optional[dict] = None, old: bool = False) -> str:
+    """The rules for a scene of this length: 2 words a second (5 s: 10, as for the storyboard). A plan from before
+    SYSTEM_GENERIC keeps the text naming H3 (its answers in the LLM cache); a prompt without a plan takes the generic one."""
+    base = LINES_SYSTEM if old and not generic(plan) else LINES_SYSTEM_GENERIC
     if seconds == SCENE_SECONDS:
-        return LINES_SYSTEM
+        return base
     words = 2 * seconds
-    return LINES_SYSTEM.replace("A scene is 5 seconds: all lines of the scene together have at most 10 words; one line has at most 8.",
+    return base.replace("A scene is 5 seconds: all lines of the scene together have at most 10 words; one line has at most 8.",
                                 f"A scene is {seconds} seconds: all lines of the scene together have at most {words} words; "
                                 f"one line has at most {max(4, words - 2)}.")
 
@@ -1057,7 +1228,7 @@ async def lines_for_prompt(llm, text: str, speakers: list[str], seconds: int, se
     who = "\n".join(f"{i}: {s}" for i, s in enumerate(speakers, 1))
     user = (f"THIS SCENE, as the prompt for the video model (English):\n{text}\n\n"
             f"People in it (number: how the prompt names them):\n{who}\n\nManner words for how: {', '.join(HOW_LLM)}.")
-    d = await llm.chat_json(_lines_system(seconds), user, _lines_schema(people), temperature=0.8, seed=seed, max_tokens=700)
+    d = await llm.chat_json(_lines_system(seconds), user, _lines_schema(people), temperature=0.8, seed=seed, max_tokens=700, step="lines")
     return [{"who": speakers[int(x["who"]) - 1], "text": str(x.get("text", "")).strip().strip('"«»“” '),
              "how": x.get("how") if x.get("how") in prompts.HOW else ""}
             for x in (d.get("lines") or [])[:2] if int(x.get("who", 0)) in people and str(x.get("text", "")).strip()]
@@ -1087,8 +1258,8 @@ async def write_lines(plan: dict, indices: list[int], seed: Optional[int] = None
                     f"People in it (number: who):\n{who}\n" + (f"\nThe last lines before it:\n{before}\n" if before else "")
                     + f"\nManner words for how: {', '.join(HOW_LLM)}.")
             try:
-                d = await llm.chat_json(_lines_system(max(2, round(grid_seconds(s)))), user, _lines_schema(people), temperature=0.8,
-                                        seed=seed + i, max_tokens=700)
+                d = await llm.chat_json(_lines_system(max(2, round(grid_seconds(s))), plan, old=True), user, _lines_schema(people), temperature=0.8,
+                                        seed=seed + i, max_tokens=700, step="lines")
             except client.LLMError:
                 if len(indices) == 1:
                     raise

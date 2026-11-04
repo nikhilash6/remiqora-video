@@ -73,6 +73,9 @@ function adopt(fresh: Project, from: Snap | null = base, pend: Parts | null = sa
   const keep: Parts = cur && cur.id === fresh.id && from ? pend || {} : {}
   P.proj = {
     ...fresh,
+    // «Подача · Вид» come with GET and PUT only (_with_looks): another call's answer keeps the ones the page has - the
+    // chips would read «Решит сценарист», and the next change would send that and erase the user's look
+    ...(!(fresh as any).looks && cur && cur.id === fresh.id && (cur as any).looks ? { looks: (cur as any).looks } : {}),
     plan: keep.plan && cur!.plan && fresh.plan && from!.plan ? mergePlan(from!.plan, cur!.plan, fresh.plan) as Project['plan'] : fresh.plan,
     settings: keep.settings ? mergeObj(from!.settings, cur!.settings, fresh.settings) : fresh.settings,
     name: keep.name && cur!.name !== from!.name ? cur!.name : fresh.name,
@@ -126,7 +129,8 @@ async function save() {
     const cur = P.proj!
     const body: Record<string, unknown> = { rev: cur.updated ?? null }
     if (what.plan) body.plan = cur.plan
-    if (what.settings) body.settings = cur.settings
+    // the look is changed by its own call (BoardView changeLook): a save of the quality or the LoRA never touches it
+    if (what.settings) { const { delivery: _d, look: _l, look_own: _o, ...rest } = cur.settings as Record<string, unknown>; body.settings = rest }
     if (what.name) body.name = cur.name
     const sent = snap(cur)   // what the server gets: edits made while it answers stay on top of its answer
     try {
@@ -203,9 +207,12 @@ onJobEnd(async (j) => {
 })
 
 // the project's jobs
-export const liveRender = (pid: string) => S.jobs.find((j) => j.kind === 'render' && (j.status === 'running' || j.status === 'queued') && j.params?.project === pid)
+// «Песня → клип» (app/autopilot.py) shoots in its own job: at its render stage it is the project's render
+const renders = (j: Job, live: boolean) => j.kind === 'render' || (j.kind === 'autopilot' && (live ? j.progress?.auto?.stage === 'render' : !!j.progress?.scenes))
+export const liveRender = (pid: string) => S.jobs.find((j) => renders(j, true) && (j.status === 'running' || j.status === 'queued') && j.params?.project === pid)
 export const liveWriter = (pid: string) => S.jobs.find((j) => (j.kind === 'write' || j.kind === 'rewrite') && (j.status === 'running' || j.status === 'queued') && j.params?.project === pid)
-export const lastRender = (pid: string) => S.jobs.filter((j) => j.kind === 'render' && j.params?.project === pid).sort((a, b) => (b.created || 0) - (a.created || 0))[0]
+export const lastRender = (pid: string) => S.jobs.filter((j) => renders(j, false) && j.params?.project === pid).sort((a, b) => (b.created || 0) - (a.created || 0))[0]
+export const liveAuto = (pid: string) => S.jobs.find((j) => j.kind === 'autopilot' && (j.status === 'running' || j.status === 'queued') && j.params?.project === pid)
 export const file = (path: string) => `/api/projects/${P.proj!.id}/files/${path}`
 
 // the output: as shot / 1080p / 4K by RTX, HDR10 by TrueHDR, 48 fps by RIFE (post.py)

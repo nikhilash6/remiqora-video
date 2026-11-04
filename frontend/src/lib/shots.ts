@@ -39,7 +39,7 @@ export function useShots(id: () => string) {
     let cap = '', tone = ''
     if (r.status === 'done') { cap = `${Math.round(r.seconds || 0)} ${t('common.s')}`; tone = 'ok' }
     else if (r.status === 'cached') { cap = t('video.shot.cached'); tone = 'ok' }
-    else if (r.status === 'running') cap = j && j.phase === 'sampling' && j.steps ? t('video.shot.step', { step: j.step, steps: j.steps }) : j && j.phase === 'loading' ? t('video.shot.loading') : j ? t('video.shot.preparing') : ''
+    else if (r.status === 'running') cap = j && j.phase === 'sampling' && j.steps ? t('video.shot.step', { step: j.step, steps: j.steps }) : j && (j.phase === 'loading' || j.phase === 'starting') ? t('video.shot.loading') : j ? t('video.shot.preparing') : ''
     else if (r.status === 'queued') cap = P.proj?.plan?.scenes[i]?.kind === 'continue' ? t('video.shot.waitsFrame', { i }) : t('video.shot.queued')
     else if (r.status === 'skipped') cap = t('video.shot.skipped')
     const pct = r.status === 'running' && j ? Math.round(j.phase === 'sampling' ? 8 + (j.steps ? 84 * j.step / j.steps : 0) : ['decoding', 'saving'].includes(j.phase) ? 95 : 4) : null

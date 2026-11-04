@@ -7,9 +7,28 @@ from __future__ import annotations
 
 from .. import config
 from .errors import EngineError, Interrupted  # noqa: F401  (imported from here by the rest of the app)
+from .remote import RemoteWorker
 from .worker import Worker
 
-COMFY = Worker()
+class Engine:
+    """COMFY: this machine's worker or the cloud one (ENGINE=remote), by config.ENGINE at each use - the mode is
+    switched on the Models page without restarting the studio (app/cloud). Everything else is the chosen worker's."""
+
+    def __init__(self) -> None:
+        object.__setattr__(self, "local", Worker())
+        object.__setattr__(self, "remote", RemoteWorker())
+
+    def current(self):
+        return self.remote if config.ENGINE == "remote" else self.local
+
+    def __getattr__(self, name: str):
+        return getattr(self.current(), name)
+
+    def __setattr__(self, name: str, value) -> None:
+        setattr(self.current(), name, value)
+
+
+COMFY = Engine()
 
 
 def output_files(outputs: dict) -> list[str]:

@@ -22,7 +22,7 @@ const ramRows = computed(() => Object.entries(S.sys?.procs || {}).filter(([, v])
 
 const run = computed(() => S.jobs.find((j) => j.status === 'running'))
 const queued = computed(() => S.jobs.filter((j) => j.status === 'queued'))
-const color = (j?: Job) => (!j ? 'var(--faint)' : ['render', 'scene', 'graph', 'take'].includes(j.kind) ? 'var(--accent)' : 'var(--ok)')
+const color = (j?: Job) => (!j ? 'var(--faint)' : ['render', 'scene', 'graph', 'take'].includes(stageKind(j)) ? 'var(--accent)' : 'var(--ok)')
 // a rough share of the job done: elapsed against its estimate (the estimate knows the cache and the cold start)
 const pct = (j?: Job) => (!j ? null : j.kind === 'scene' && j.phase === 'sampling' && j.steps ? Math.round((100 * j.step) / j.steps)
   : j.estimate ? Math.min(99, Math.round((100 * j.elapsed) / j.estimate)) : null)
@@ -34,19 +34,22 @@ const ENT: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"
 const h = (x: unknown) => String(x ?? '').replace(/[&<>"']/g, (c) => ENT[c])
 // the same words as plain text (a title, the panel's row)
 const plain = (x: string) => x.replace(/<[^>]+>/g, '').replace(/&(amp|lt|gt|quot|#39);/g, (e) => Object.keys(ENT).find((k) => ENT[k] === e) || e)
+// cloud mode / own server: the card is the rented one - its words, its memory (/api/system gives it), no RAM of this PC
+const cloudy = computed(() => !!S.sys?.where && S.sys.where !== 'local')
 // what the card does, in words: the running job, or what still sits in memory
 function actText(j: Job | undefined, nq: number) {
   if (!j) {
     const s = S.sys
-    const held = s?.llm ? t('status.heldLlm', { name: h(s.llm) }) : s?.engine === 'ready' && (s.engine_ram || 0) > 2 ? t('status.heldEngine', { name: h(s.engine_model || 'H3'), gb: gb(s.engine_ram!) }) : ''
-    return nq ? t('status.inQueue', { n: nq }) : `${t('status.gpuFree')}${held ? ' · ' + held : ''}`
+    const held = s?.llm ? t('status.heldLlm', { name: h(s.llm) }) : s?.engine === 'ready' && (s.engine_ram || 0) > 2 ? t('status.heldEngine', { name: h(s.engine_model || 'H3'), gb: gb(s.engine_ram!) })
+      : cloudy.value && s?.engine_model ? t('status.heldCloud', { name: h(s.engine_model) }) : ''
+    return nq ? t('status.inQueue', { n: nq }) : `${t(cloudy.value ? 'status.cloudFree' : 'status.gpuFree')}${held ? ' · ' + held : ''}`
   }
   const pr = j.progress || {}
   // phase 10: the model that shoots; phase 11: the scene being shot may have its own
   const who = h((pr.current != null && pr.scenes?.[pr.current]?.model) || j.params?.model || 'H3')
   const step = () => (j.phase === 'sampling' && j.steps ? ` · ${t('status.step', { step: j.step, steps: j.steps })}`
     : j.phase === 'loading' || j.phase === 'starting' ? ` · <span class="warn-t">${t('status.loadingModel')}</span>` : '')
-  if (j.kind === 'render') {
+  if (stageKind(j) === 'render') {   // «Песня → клип» at its render stage too
     const stage = ['assembling', 'mixing', 'interpolating', 'upscaling'].includes(pr.stage) ? t(`status.stage.${pr.stage}`) : ''
     if (stage) return `<b>${who}</b> · ${stage}`
     const done = (pr.scenes || []).filter((x: any) => ['done', 'cached'].includes(x.status)).length
@@ -68,11 +71,12 @@ function actText(j: Job | undefined, nq: number) {
   if (k === 'lyrics') return `<b>Whisper</b> · ${t('status.lyrics')} · ${secsOf()}`
   const what = k === 'translate' ? (j.params?.what === 'look' ? t('status.trLook') : t('status.trPrompt')) : j.params?.how === 'ru' ? `${t('status.trScenes')}${j.steps ? ` · ${t('status.stepOf', { step: j.step, steps: j.steps })}` : ''}` : k === 'describe' || j.params?.how === 'describe' ? t('status.describing')
     : k === 'places' ? t('status.gathering') : k === 'write' ? t('status.writing') : k === 'graph-llm' ? t('status.graphLlm') : t('status.rewriting')
+  if (j.kind === 'autopilot' && k === 'write' && pr.stage !== 'writing') return `<b>${t('status.writer')}</b> · ${t('status.preparing')} · ${secsOf()}`
   return `<b>${t('status.writer')}</b> · ${what} · ${secsOf()}`
 }
 // the pill's words: the job, the queue, what sits in memory - or, idle and empty, the short «GPU свободна»
-const pillText = computed(() => (!run.value && !queued.value.length && !S.sys?.llm && !(S.sys?.engine === 'ready' && (S.sys.engine_ram || 0) > 2)
-  ? t('status.gpuIdle') : actText(run.value, queued.value.length)))
+const pillText = computed(() => (!run.value && !queued.value.length && !S.sys?.llm && !(S.sys?.engine === 'ready' && (S.sys.engine_ram || 0) > 2) && !(cloudy.value && S.sys?.engine_model)
+  ? t(cloudy.value ? 'status.cloudIdle' : 'status.gpuIdle') : actText(run.value, queued.value.length)))
 const kind = jobKindName
 const proj = (j: Job) => j.params?.project as string | undefined
 
@@ -83,7 +87,7 @@ onMounted(() => { document.addEventListener('click', away); document.addEventLis
 onUnmounted(() => { document.removeEventListener('click', away); document.removeEventListener('keydown', esc) })
 
 function stop(j: Job) {
-  if (!confirm(j.kind === 'render' ? t('status.confirmStopRender') : t('status.confirmStop'))) return
+  if (!confirm(stageKind(j) === 'render' ? t('status.confirmStopRender') : t('status.confirmStop'))) return
   post(`/api/jobs/${j.id}/cancel`).then(pollJobs).catch((e) => banner(e.message))
 }
 const unqueue = (j: Job) => post(`/api/jobs/${j.id}/cancel`).then(pollJobs).catch((e) => banner(e.message))
@@ -96,21 +100,21 @@ async function unload() {
   <div v-if="run" class="jobline" :style="{ '--c': color(run) }"><i :style="{ width: `${pct(run) || 0}%` }" /></div>
   <div class="statusbar">
     <div class="act" :class="{ on: !!run }" :style="{ '--c': color(run) }">
-      <button type="button" class="act-btn" :aria-expanded="panel" aria-haspopup="dialog" :title="plain(actText(run, queued.length))" @click.stop="panel = !panel">
+      <button type="button" class="act-btn" :aria-expanded="panel" aria-haspopup="dialog" :title="plain(actText(run, queued.length))" :aria-label="`${t('status.gpuLabel')}: ${plain(pillText)}`" @click.stop="panel = !panel">
         <i class="act-dot" /><span class="act-text" v-html="pillText" />
         <span v-if="run" class="act-pct"><b v-if="pct(run) != null">{{ pct(run) }}%</b><span v-if="run.estimate > run.elapsed" class="act-left">{{ left(run) }}</span></span>
         <span v-if="queued.length" class="q">+{{ queued.length }}</span></button>
-      <div v-if="panel" class="act-panel" role="dialog" :aria-label="t('status.panel')" @click.stop>
+      <div v-if="panel" class="act-panel" role="dialog" :aria-label="t(cloudy ? 'status.panelCloud' : 'status.panel')" @click.stop>
         <template v-if="run">
           <div class="ap-head"><i :style="{ background: color(run) }" /><b>{{ kind(run) }}</b><span v-if="proj(run)">«{{ projectName(proj(run)!) }}»</span></div>
           <div class="ap-row muted"><span>{{ plain(actText(run, 0)) }}</span><span>{{ pct(run) != null ? `${pct(run)}%` : '' }}{{ run.estimate > run.elapsed ? ` · ${left(run)}` : '' }}</span></div>
           <span class="bar big" role="progressbar" :aria-valuenow="pct(run) || 0" aria-valuemin="0" aria-valuemax="100"><i :style="{ width: `${pct(run) || 0}%`, background: color(run) }" /></span>
-          <div class="ap-acts"><router-link v-if="proj(run)" class="btn" :to="run.kind.startsWith('graph') ? `/g/${proj(run)}` : `/p/${proj(run)}${run.kind === 'render' ? '/video' : ''}`" @click="panel = false">{{ t('status.openVideo') }}</router-link>
+          <div class="ap-acts"><router-link v-if="proj(run)" class="btn" :to="run.kind.startsWith('graph') ? `/g/${proj(run)}` : `/p/${proj(run)}${stageKind(run) === 'render' ? '/video' : ''}`" @click="panel = false">{{ t('status.openVideo') }}</router-link>
             <router-link v-else-if="run.kind === 'scene'" class="btn" to="/lab" @click="panel = false">{{ t('status.openLab') }}</router-link>
             <button type="button" class="btn danger" @click="stop(run)">{{ t('common.stop') }}</button></div>
         </template>
         <template v-else>
-          <p class="muted">{{ t('status.freeText') }}</p>
+          <p class="muted">{{ t(cloudy ? 'status.freeTextCloud' : 'status.freeText') }}</p>
           <div v-if="S.sys?.engine === 'ready' && !queued.length" class="ap-acts"><button type="button" class="btn" :title="t('status.unloadTitle')" @click="unload">{{ t('status.unload') }}</button></div>
         </template>
         <div v-if="queued.length" class="ap-sec"><span class="lbl">{{ t('status.queue') }}</span>
@@ -131,7 +135,7 @@ async function unload() {
       <span v-if="S.sys.ram" class="meter" :title="ramRows.map(([k, v]) => `${holderName(k)}: ${gb(v)} ${t('common.gb')}`).join(' · ')"><span>{{ t('status.ramShort') }}</span>
         <span class="bar" role="progressbar" :aria-valuenow="pctOf(S.sys.ram)" aria-valuemin="0" aria-valuemax="100"><i :class="level(S.sys.ram)" :style="{ width: `${pctOf(S.sys.ram)}%` }" /></span>
         <b>{{ gb(S.sys.ram.used) }}<small>/{{ Math.round(S.sys.ram.total) }} {{ t('common.gb') }}</small></b></span>
-      <span v-if="S.sys.vram" class="meter" :title="holders.map((h) => `${h.label}: ${gb(h.gb)} ${t('common.gb')}`).join(' · ')"><span>{{ t('status.vramShort') }}</span>
+      <span v-if="S.sys.vram" class="meter" :title="holders.map((h) => `${h.label}: ${gb(h.gb)} ${t('common.gb')}`).join(' · ')"><span>{{ t(cloudy ? 'status.vramCloud' : 'status.vramShort') }}</span>
         <span class="bar" role="progressbar" :aria-valuenow="pctOf(S.sys.vram)" aria-valuemin="0" aria-valuemax="100">
           <i v-for="h in holders" :key="h.key" :style="{ width: `${Math.min(100, (h.gb / S.sys.vram.total) * 100)}%`, background: h.color }" /><i v-if="!holders.length" :class="level(S.sys.vram)" :style="{ width: `${pctOf(S.sys.vram)}%` }" /></span>
         <b>{{ gb(S.sys.vram.used) }}<small>/{{ Math.round(S.sys.vram.total) }} {{ t('common.gb') }}</small></b></span>

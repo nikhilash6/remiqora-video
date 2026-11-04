@@ -21,7 +21,7 @@ import { api } from '../lib/api'
 import { P, openProject, reloadProject } from '../lib/project'
 import { S, banner, onJobEnd } from '../lib/store'
 import { QL } from '../lib/consts'
-import { mins } from '../lib/format'
+import { dur, mins } from '../lib/format'
 import { BUILD_SAY, build, buildEst, buildState } from '../lib/editBuild'
 import '../styles/edit.css'
 
@@ -127,7 +127,7 @@ onUnmounted(() => { removeEventListener('keydown', onKey); off?.(); flushEdit() 
       <router-link class="ghost eb-back" :to="node ? `/g/${id}` : `/p/${id}`" :title="node ? t('edit.toGraph') : t('edit.toBoard')"><Icon name="back" />{{ node ? t('edit.graph') : t('edit.board') }}</router-link>
       <div class="eb-name">
         <h1>{{ node ? ED.view.title || t('edit.montage') : P.proj.name }}</h1>
-        <span class="eb-facts"><b>{{ tc(ED.duration) }}</b><span>{{ t('edit.clips', ED.clips.length) }}</span><span>{{ QL[ED.view.quality] }}</span>
+        <span class="eb-facts"><b>{{ dur(ED.duration) }}</b><span>{{ t('edit.clips', ED.clips.length) }}</span><span>{{ QL[ED.view.quality] }}</span>
           <span class="eb-save" :class="{ on: ED.saving }">{{ ED.saving ? t('edit.saving') : t('edit.saved') }}</span></span>
       </div>
       <span class="eb-state" :class="buildState" :title="buildState === 'error' ? ED.view.error || '' : ''">

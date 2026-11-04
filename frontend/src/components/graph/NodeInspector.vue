@@ -9,15 +9,17 @@ import SceneForm from '../lab/SceneForm.vue'
 import VoiceRecorder from '../VoiceRecorder.vue'
 import { ENGINE_NAME, GE, ICON, MAKES, SCENE_S, WHO_COLOR, addNode, duplicateBranch, expand, feedSeconds, fileUrl, inputsOf, link, live, nodeOf, refLoraOf, removeNodes, rseed,
   ruTitle, runLlm, runTo, secondsOf, speakersIn, tOf, touch, typeTitle, upload } from '../../lib/graphDoc'
-import { S, banner, lorasFor, v2vLoras } from '../../lib/store'
+import { S, banner, h3Ready, lorasFor, v2vLoras } from '../../lib/store'
 import { api, post } from '../../lib/api'
 import type { Job } from '../../lib/types'
 import { compose, empty, parse, type Fields } from '../../lib/sceneForm'
 import { checkPrompt } from '../../lib/promptChecks'
 import { inLang } from '../../lib/textLang'
 import { GENDERS, HOW_RU, LENGTHS } from '../../lib/consts'
+import HeroKind from '../board/HeroKind.vue'
 import { NODE_HELP, nextStep, nodeWhat, whoName } from '../../lib/nodeHelp'
 import { dec, mmss } from '../../lib/format'
+import { L, loadLooks } from '../../lib/looks'
 
 const props = defineProps<{ id: string }>()
 const { t: tx } = useI18n()
@@ -28,6 +30,10 @@ const spec = computed(() => GE.types[t.value])
 const st = computed(() => GE.state?.nodes[props.id])
 const busy = computed(() => !!live())
 const set = (k: string, v: unknown) => { d.value[k] = v; touch() }
+// «Стиль проекта» (the bar above the canvas): the writer reads the delivery and the look, not its mood; a scene may
+// have its own look (app/graph.look_text)
+const styled = computed(() => 'delivery' in (GE.proj?.settings || {}))
+loadLooks().catch(() => {})
 // Krea 2 reads its text alone: switching to it lets go of the pictures on «образцы»
 function setPictureModel(m: string) {
   if (m !== 'flux2') GE.edges = GE.edges.filter((e) => !(e.target === props.id && e.targetHandle === 'ref'))
@@ -81,13 +87,18 @@ async function ideaToPrompt() {
   touch()
   banner(tx('nodesPanel.promptReady', { rest: into.length ? tx('nodesPanel.linkedTo', { what: into.length === 1 ? tx('nodesPanel.toScene') : tx('nodesPanel.toScenes') }) : tx('nodesPanel.linkIt') }))
 }
+// what a hero is: age and gender are a person's only; a look written for another kind is the user's to redo («В английский»)
+function setKind(k: string) {
+  set('kind', k === 'person' ? '' : k)
+  if (k !== 'person') { set('age', ''); set('gender', '') }
+}
 // a hero's Russian look -> the English look and outfit
 async function heroToEnglish() {
   const ru = (d.value.ru || '').trim()
   if (!ru || trBusy.value) return
   if (((d.value.en || '').trim() || (d.value.outfit_en || '').trim()) && !confirm(tx('nodesPanel.replaceLook'))) return
   const hero = d.value
-  const r = await translateJob('/api/llm/translate-look', { ru, gender: hero.gender || '', age: hero.age || null })
+  const r = await translateJob('/api/llm/translate-look', { ru, gender: hero.gender || '', age: hero.age || null, kind: hero.kind || 'person' })
   if (!r) return
   hero.en = r.en; hero.outfit_en = r.outfit_en
   touch()
@@ -249,6 +260,43 @@ const clipSecs = computed(() => secondsOf(srcNode('clip')))
 const frameAt = computed(() => (d.value.at === 'last' || d.value.at == null || d.value.at === '' ? null : Number(d.value.at)))
 const writerStale = computed(() => st.value?.state === 'stale' || st.value?.state === 'empty')
 const ready = computed(() => st.value?.state === 'ready')
+
+// «Песня»: a song of the song library (POST /api/songs finds its bars on upload), copied into the project; its words
+// recognised by the GPU job «Распознать слова» (or by the clip writer before it writes)
+const songBusy = ref<'' | 'upload' | 'words'>('')
+async function pickSong(ev: Event) {
+  const f = (ev.target as HTMLInputElement).files?.[0]
+  ;(ev.target as HTMLInputElement).value = ''
+  if (!f) return
+  songBusy.value = 'upload'
+  try {
+    const fd = new FormData()
+    fd.append('file', f)
+    const s = await api<{ id: string }>('/api/songs', { method: 'POST', body: fd })
+    const r = await post<{ file: string; name: string; duration: number; bpm: number; recognised: boolean }>(`/api/projects/${GE.id}/nodes/song`, { song: s.id })
+    Object.assign(d.value, { song: s.id, file: r.file, name: r.name, duration: r.duration, bpm: r.bpm, recognised: r.recognised })
+    touch(50)
+  } catch (e) { banner((e as Error).message) } finally { songBusy.value = '' }
+}
+async function recogniseWords() {
+  if (!d.value.song || songBusy.value) return
+  songBusy.value = 'words'
+  try {
+    let job: Job = await post(`/api/songs/${d.value.song}/lyrics`)
+    S.jobs = [...S.jobs, job]
+    while (job.status === 'queued' || job.status === 'running') {
+      await new Promise((ok) => setTimeout(ok, 1500))
+      job = await api(`/api/jobs/${job.id}`)
+    }
+    if (job.status !== 'done') throw new Error(job.error || tx('nodesPanel.song.noWords'))
+    d.value.recognised = true
+    touch(50)
+  } catch (e) { banner((e as Error).message) } finally { songBusy.value = '' }
+}
+const piece = computed(() => st.value?.piece || null)
+// a scene of its own model: the models a scene may take (installed first, as the pickers list them)
+const sceneModels = computed(() => (S.cfg?.video_models || []).filter((m) => !m.imported && m.id !== graphModel.value))
+const shotName = (s: any) => (s.shot === 'sing' ? tx('nodesPanel.clipw.sing') : s.shot === 'insert' ? tx('nodesPanel.clipw.insert') : tx('nodesPanel.clipw.perform'))
 </script>
 
 <template>
@@ -309,7 +357,8 @@ const ready = computed(() => st.value?.state === 'ready')
       <img v-if="d.photo" class="ni-img" :src="fileUrl(d.photo)!" alt="">
       <label class="btn"><Icon name="image" />{{ d.photo ? tx('nodesPanel.otherPhoto') : tx('nodesPanel.heroPhoto') }}<input type="file" accept="image/*" hidden @change="pick('image', 'photo', $event)"></label>
       <button type="button" class="btn" :disabled="!d.photo || busy" @click="runLlm([id])"><Icon name="spark" />{{ tx('nodesPanel.describe') }}</button>
-      <div class="ni-row"><select class="field-in" :value="d.gender || ''" :aria-label="tx('nodesPanel.gender')" @change="set('gender', ($event.target as HTMLSelectElement).value)"><option value="">{{ tx('nodesPanel.genderPh') }}</option><option v-for="g in GENDERS" :key="g[0]" :value="g[0]">{{ g[1] }}</option></select>
+      <HeroKind :model-value="d.kind || 'person'" @update:model-value="setKind($event)" />
+      <div v-if="(d.kind || 'person') === 'person'" class="ni-row"><select class="field-in" :value="d.gender || ''" :aria-label="tx('nodesPanel.gender')" @change="set('gender', ($event.target as HTMLSelectElement).value)"><option value="">{{ tx('nodesPanel.genderPh') }}</option><option v-for="g in GENDERS" :key="g[0]" :value="g[0]">{{ g[1] }}</option></select>
         <input class="field-in" type="number" min="21" max="90" :value="d.age || ''" :placeholder="tx('nodesPanel.agePh')" :aria-label="tx('nodesPanel.age')" @input="set('age', +($event.target as HTMLInputElement).value || '')"></div>
       <label class="stack"><span class="lbl">{{ tx('nodesPanel.inRu') }} <small>{{ tx('nodesPanel.inRuSub') }}</small></span><textarea class="field-in" rows="3" :value="d.ru || ''" @input="set('ru', ($event.target as HTMLTextAreaElement).value)" /></label>
       <button type="button" class="btn" :disabled="!(d.ru || '').trim() || trBusy" :title="tx('nodesPanel.toEnTitle')" @click="heroToEnglish">
@@ -319,6 +368,7 @@ const ready = computed(() => st.value?.state === 'ready')
       <label class="stack"><span class="lbl">{{ tx('nodesPanel.lookEn') }} <small>{{ tx('nodesPanel.lookEnSub') }}</small></span><textarea class="field-in" rows="4" :value="d.en || ''" @input="set('en', ($event.target as HTMLTextAreaElement).value)" /></label>
       <label class="stack"><span class="lbl">{{ tx('nodesPanel.outfitEn') }}</span><textarea class="field-in" rows="2" :value="d.outfit_en || ''" @input="set('outfit_en', ($event.target as HTMLTextAreaElement).value)" /></label>
       <p class="muted small">{{ tx('nodesPanel.heroHint') }}</p>
+      <p v-if="d.kind && d.kind !== 'person'" class="muted small">{{ tx('nodesPanel.heroNoFace') }}</p>
     </template>
     <template v-else-if="t === 'track'">
       <audio v-if="d.file" :src="fileUrl(d.file)!" controls style="width:100%" />
@@ -374,6 +424,18 @@ const ready = computed(() => st.value?.state === 'ready')
           <i v-if="takes.length > 1" role="button" :aria-label="tx('nodesPanel.dropTake')" @click.stop="dropTake(i)">×</i></button>
       </div>
       <button type="button" class="btn" :disabled="busy" @click="moreTake"><Icon name="retake" />{{ tx('nodesPanel.moreTake') }}</button>
+      <label class="stack"><span class="lbl">{{ tx('looks.sceneLook') }} <HelpQ id="idea" term="Вид" /></span>
+        <select class="field-in" :value="d.look || ''" :title="tx('looks.sceneLookHint')" @change="set('look', ($event.target as HTMLSelectElement).value || undefined)">
+          <option value="">{{ tx('looks.asProject') }}</option>
+          <optgroup v-for="g in L.groups.filter((x) => x.id !== 'mine')" :key="g.id" :label="g.name">
+            <option v-for="x in L.looks.filter((y) => y.group === g.id)" :key="x.id" :value="x.id">{{ x.name }}</option></optgroup>
+        </select></label>
+      <label class="stack"><span class="lbl">{{ tx('nodesPanel.sceneModel') }}</span>
+        <select class="field-in" :value="d.model || ''" :title="tx('nodesPanel.sceneModelHint')" @change="set('model', ($event.target as HTMLSelectElement).value || undefined)">
+          <option value="">{{ tx('nodesPanel.sceneModelGraph', { m: vm?.name || graphModel }) }}</option>
+          <option v-for="m in sceneModels" :key="m.id" :value="m.id" :disabled="!!m.missing?.length && m.id !== d.model">{{ m.name }}</option>
+        </select></label>
+      <p v-if="d.cut" class="muted small">{{ tx('nodesPanel.bars') }}: {{ tx('nodesPanel.barsVal', { a: dec(Number(d.cut.start).toFixed(2)), b: dec(Number(d.cut.end).toFixed(2)), s: dec(Number(d.seconds).toFixed(2)) }) }}{{ inputsOf(id, 'voice').length ? ' · ' + (d.cut.voice === false ? tx('nodesPanel.barsNoVoice') : tx('nodesPanel.barsVoice')) : '' }}</p>
       <div v-if="ready && st?.checks?.length" class="warn-line" :title="tx('nodesPanel.checksTitle')">
         <Icon name="warn" :size="14" /><span>{{ tx('nodesPanel.inClip', { list: st.checks.map((x) => tx('nodesPanel.checkAt', { name: x.name, at: dec(x.at.toFixed(1)) })).join('; ') }) }}</span></div>
       <template v-if="ready && st?.alpha">
@@ -435,8 +497,8 @@ const ready = computed(() => st.value?.state === 'ready')
       <label class="stack"><span class="lbl">LoRA <small>{{ tx('nodesPanel.v2vLoraSub') }}</small></span>
         <select class="field-in" :value="d.lora || ''" @change="set('lora', ($event.target as HTMLSelectElement).value || null)">
           <option value="">{{ tx('nodesPanel.choose') }}</option>
-          <optgroup v-for="[eng, label] in V2V_GROUPS" :key="eng" :label="label">
-            <option v-for="l in v2vLoras().filter((x) => x.model === eng && x.v2v?.reads !== 'voice')" :key="l.id" :value="l.id">{{ l.folder && l.name.startsWith('lora_weights') ? `${l.folder} · ${l.name}` : l.name }}</option></optgroup>
+          <optgroup v-for="[eng, label] in V2V_GROUPS" :key="eng" :label="eng === 'h3' && !h3Ready() ? `${label} · ${tx('nodesPanel.needH3')}` : label">
+            <option v-for="l in v2vLoras().filter((x) => x.model === eng && x.v2v?.reads !== 'voice')" :key="l.id" :value="l.id" :disabled="eng === 'h3' && !h3Ready() && l.id !== d.lora">{{ l.folder && l.name.startsWith('lora_weights') ? `${l.folder} · ${l.name}` : l.name }}</option></optgroup>
         </select></label>
       <p v-if="!v2vLoras().length" class="muted small">{{ tx('nodesPanel.noV2v') }}</p>
       <template v-if="vl?.v2v">
@@ -517,6 +579,10 @@ const ready = computed(() => st.value?.state === 'ready')
     <template v-else-if="t === 'montage'">
       <video v-if="ready && st?.file" class="ni-img" :src="fileUrl(st.file)!" controls playsinline />
       <router-link class="primary" :to="`/g/${GE.id}/edit/${id}`"><Icon name="cut" :size="18" />{{ tx('nodesPanel.openMontage') }}</router-link>
+      <label class="check-row" :title="tx('nodesPanel.beatsTitle')"><input type="checkbox" :checked="!!d.beats" @change="set('beats', ($event.target as HTMLInputElement).checked || undefined)">{{ tx('nodesPanel.beats') }}</label>
+      <p v-if="d.beats" class="muted small">{{ tx('nodesPanel.beatsHint') }}</p>
+      <label class="check-row" :title="tx('nodesPanel.faceCheckTitle')"><input type="checkbox" :checked="!!d.faces" @change="set('faces', ($event.target as HTMLInputElement).checked || undefined)">{{ tx('nodesPanel.faceCheck') }}</label>
+      <p v-if="d.faces" class="muted small">{{ inputsOf(id, 'face').length ? tx('nodesPanel.faceCheckHint') : tx('nodesPanel.faceCheckNoInput') }}</p>
       <p class="muted small">{{ tx('nodesPanel.montageHint') }}</p>
       <dl class="gs-dl"><dt>{{ tx('nodesPanel.scenesCount') }}</dt><dd>{{ inputsOf(id, 'clips').length }}</dd><dt>{{ tx('nodesPanel.montage') }}</dt><dd>{{ d.edit ? tx('nodesPanel.own') : tx('nodesPanel.asInput') }}</dd>
         <dt>{{ tx('nodesPanel.length') }}</dt><dd>{{ st?.seconds ? mmss(st.seconds) : '—' }}</dd></dl>
@@ -545,15 +611,48 @@ const ready = computed(() => st.value?.state === 'ready')
         <option v-for="s in LENGTHS" :key="s" :value="s">{{ s < 60 ? tx('nodesPanel.secs', { s }) : tx('nodesPanel.sMin', { n: s / 60 }) }}</option></select></label>
         <label class="stack grow"><span class="lbl">{{ tx('nodesPanel.people') }}</span><select class="field-in" :value="d.mode || 'auto'" @change="set('mode', ($event.target as HTMLSelectElement).value)">
           <option value="auto">{{ tx('nodesPanel.byHeroes') }}</option><option value="one">{{ tx('nodesPanel.oneHero') }}</option><option value="several">{{ tx('nodesPanel.several') }}</option><option value="none">{{ tx('nodesPanel.noPeople') }}</option></select></label></div>
-      <label class="stack"><span class="lbl">{{ tx('nodesPanel.mood') }}</span><input class="field-in" list="g-moods" :value="d.mood || ''" @input="set('mood', ($event.target as HTMLInputElement).value)"></label>
-      <datalist id="g-moods"><option v-for="m in S.moods" :key="m" :value="m" /></datalist>
+      <template v-if="!styled">
+        <label class="stack"><span class="lbl">{{ tx('nodesPanel.mood') }}</span><input class="field-in" list="g-moods" :value="d.mood || ''" @input="set('mood', ($event.target as HTMLInputElement).value)"></label>
+        <datalist id="g-moods"><option v-for="m in S.moods" :key="m" :value="m" /></datalist></template>
+      <p v-else class="muted small">{{ tx('looks.writerNote') }}</p>
       <label class="stack"><span class="lbl">{{ tx('nodesPanel.musicSound') }}</span><input class="field-in" :value="d.music || ''" :placeholder="tx('nodesPanel.musicPh')" @input="set('music', ($event.target as HTMLInputElement).value)"></label>
-      <label class="check-row"><input type="checkbox" :checked="!!d.ref_photo" @change="set('ref_photo', ($event.target as HTMLInputElement).checked)">{{ tx('nodesPanel.keepFace', { rest: vm && !vm.refs ? tx('nodesPanel.onlyH3', { m: vm.name }) : '' }) }}</label>
+      <label class="check-row"><input type="checkbox" :checked="!!d.ref_photo" :disabled="!h3Ready()" @change="set('ref_photo', ($event.target as HTMLInputElement).checked)">{{ tx('nodesPanel.keepFace', { rest: !h3Ready() ? '; ' + tx('nodesPanel.needH3') : vm && !vm.refs ? tx('nodesPanel.onlyH3', { m: vm.name }) : '' }) }}</label>
+      <label v-if="(d.mode || 'auto') !== 'none'" class="check-row"><input type="checkbox" :checked="!!d.lines" @change="set('lines', ($event.target as HTMLInputElement).checked || undefined)">{{ tx('nodesPanel.writerLines') }}</label>
       <button type="button" class="primary" :disabled="busy" @click="runLlm([id])"><Icon name="spark" :size="18" />{{ d.plan ? (writerStale ? tx('nodesPanel.rewrite') : tx('nodesPanel.writeAgain')) : tx('nodesPanel.write') }}</button>
       <button type="button" class="btn" :disabled="!d.plan" @click="expand(id)"><Icon name="layers" />{{ tx('nodesPanel.expand') }}</button>
       <div v-if="d.plan" class="plan-list"><span class="lbl">{{ d.plan.title_ru }}</span>
         <p v-for="s in d.plan.scenes" :key="s.index"><b>{{ s.index + 1 }}</b> {{ s.ru }}</p></div>
       <p class="muted small">{{ tx('nodesPanel.writerHint') }}</p>
+    </template>
+
+    <!-- song: the song's piece, bars and words («Песня → клип» in parts) -->
+    <template v-else-if="t === 'song'">
+      <audio v-if="d.file" :src="fileUrl(d.file)!" controls style="width:100%" />
+      <label class="btn" :class="{ disabled: !!songBusy }"><Icon name="music" />{{ songBusy === 'upload' ? tx('nodesPanel.song.uploading') : d.file ? tx('nodesPanel.song.other') : tx('nodesPanel.song.load') }}
+        <input type="file" accept="audio/*" hidden :disabled="!!songBusy" @change="pickSong"></label>
+      <p v-if="d.file" class="muted small">{{ tx('nodesPanel.song.info', { bpm: dec(d.bpm ?? '—'), d: mmss(d.duration || 0), w: d.recognised ? tx('nodesPanel.song.words') : tx('nodesPanel.song.noWords') }) }}</p>
+      <button v-if="d.file && !d.recognised" type="button" class="btn" :disabled="!!songBusy || busy" :title="tx('nodesPanel.song.recogniseTitle')" @click="recogniseWords">
+        <Icon name="spark" />{{ songBusy === 'words' ? tx('nodesPanel.song.recognising') : tx('nodesPanel.song.recognise') }}</button>
+      <label class="stack"><span class="lbl">{{ tx('nodesPanel.song.piece') }}</span>
+        <div class="seg"><button v-for="v in ['whole', 'best', 'own']" :key="v" type="button" :class="{ on: (d.length || 'whole') === v }" @click="set('length', v)">{{ tx(`nodesPanel.song.${v}`) }}</button></div></label>
+      <div v-if="d.length === 'own'" class="ni-row">
+        <label class="stack grow"><span class="lbl">{{ tx('nodesPanel.song.from') }}</span>
+          <input class="field-in" type="number" step="0.5" min="0" :value="d.start ?? 0" @change="set('start', +($event.target as HTMLInputElement).value)"></label>
+        <label class="stack grow"><span class="lbl">{{ tx('nodesPanel.song.secs') }}</span>
+          <input class="field-in" type="number" step="1" min="5" max="300" :value="d.seconds ?? 60" @change="set('seconds', +($event.target as HTMLInputElement).value)"></label></div>
+      <p v-if="piece" class="muted small">{{ tx('nodesPanel.song.picked', { a: mmss(piece[0]), b: mmss(piece[1]), s: mmss(piece[1] - piece[0]) }) }}</p>
+      <p class="muted small">{{ tx('nodesPanel.song.hint') }}</p>
+    </template>
+
+    <!-- the clip writer: the «Песня → клип» button's script, into the graph -->
+    <template v-else-if="t === 'clip_writer'">
+      <p v-if="styled" class="muted small">{{ tx('looks.writerNote') }}</p>
+      <button type="button" class="primary" :disabled="busy || !inputsOf(id, 'song').length" @click="runLlm([id])"><Icon name="spark" :size="18" />{{ d.plan ? (writerStale ? tx('nodesPanel.rewrite') : tx('nodesPanel.writeAgain')) : tx('nodesPanel.write') }}</button>
+      <button type="button" class="btn" :disabled="!d.plan" @click="expand(id)"><Icon name="layers" />{{ tx('nodesPanel.expand') }}</button>
+      <div v-if="d.plan" class="plan-list"><span class="lbl">{{ d.plan.title_ru }}</span>
+        <p v-for="s in d.plan.scenes" :key="s.index"><b>{{ s.index + 1 }}</b> <small class="muted">{{ dec(Number(s.seconds).toFixed(1)) }} · {{ shotName(s) }}</small> {{ s.ru }}</p></div>
+      <p class="muted small">{{ tx('nodesPanel.clipw.hint') }}</p>
+      <p class="muted small">{{ tx('nodesPanel.clipw.expandHint') }}</p>
     </template>
 
     <!-- group -->
