@@ -183,7 +183,7 @@ The minimum to shoot is **the writer and LTX 2.3**, about 51 GB; **MiniMax H3 is
 
 ## From an idea to a film
 
-![The idea screen: the writer, the length, the frame and the videos made so far](docs/screenshots/en/01-idea.png)
+![The home screen «What shall we shoot?»: one box for an idea, a song, a photo or a video, «How we shoot», the graph templates and your videos](docs/screenshots/en/01-idea.png)
 
 1. **Idea.** «A girl in a red coat walks along the night embankment in the rain, stops at a lamp and smiles into the camera.» The more concrete the place, light, clothes and ending, the more coherent the scenes. A 30 s film is 6 scenes of 5 s, or 3 scenes of 10 s on LTX.
 2. **Storyboard.** It takes the writer 20–30 s. The scenes are laid out as a contact sheet, one row per episode. Every edit is saved at once. You can rewrite a scene, ask for another variant, pin the ones you like, add a scene, or switch to your own prompts. Under «Heroes», Krea 2 draws four tries of the hero and you approve one as the portrait; under «Places», each location gets one picture, so the place stays the same across scenes.
@@ -191,7 +191,7 @@ The minimum to shoot is **the writer and LTX 2.3**, about 51 GB; **MiniMax H3 is
 4. **Montage** (optional). Trim, reorder, transitions, a track, one color, then «Build video». Nothing is re-shot.
 5. **Finish.** As shot, 1080p, 4K, HDR10 or 48 fps. Changing the output only re-processes; it never re-shoots.
 
-![The storyboard: the hero's card, the timeline of chains and the scene cards](docs/screenshots/en/02-storyboard.png)
+![The storyboard: the scenes by episode, the Hero, Places and Shooting tabs, and the scene panel on the right](docs/screenshots/en/02-storyboard.png)
 
 ![The film: the shot scenes, the output and the player](docs/screenshots/en/03-film.png)
 
@@ -398,7 +398,7 @@ Profiles: **Minimum** (the writer and LTX 2.3, ~51 GB, no Hugging Face token nee
 
 ### Way 1: the installer
 
-![The installer: the computer check and the choice of model sets](docs/screenshots/en/09-installer.png)
+![The installer: the computer check and the profiles (Minimum, H3, Pictures and faces, Everything) with the sets under them](docs/screenshots/en/09-installer.png)
 
 ![The installer: downloading the engine and the sets, with pause and resume](docs/screenshots/en/10-installer-download.png)
 
